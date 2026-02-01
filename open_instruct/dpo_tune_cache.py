@@ -43,7 +43,7 @@ from accelerate.utils import DeepSpeedPlugin, InitProcessGroupKwargs, set_seed
 from huggingface_hub import HfApi
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 from rich.pretty import pprint
-from torch.utils.data import DataLoader, RandomSampler
+from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from transformers import AutoConfig, AutoModelForCausalLM, BitsAndBytesConfig, get_scheduler
 
@@ -405,9 +405,8 @@ def main(args: dpo_utils.ExperimentConfig, tc: TokenizerConfig):
     else:
         collate_fn = dpo_utils.DataCollatorForSeq2SeqDPO(tokenizer=tokenizer, model=model, padding="longest")
 
-    train_sampler = RandomSampler(train_dataset, generator=torch.Generator().manual_seed(args.seed))
     train_dataloader = DataLoader(
-        train_dataset, sampler=train_sampler, collate_fn=collate_fn, batch_size=args.per_device_train_batch_size
+        train_dataset, shuffle=True, collate_fn=collate_fn, batch_size=args.per_device_train_batch_size
     )
 
     # Optimizer
