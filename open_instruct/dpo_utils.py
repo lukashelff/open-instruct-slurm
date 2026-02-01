@@ -282,6 +282,8 @@ class ModelConfig:
     """The specific model version to use (can be a branch name, tag name or commit id)."""
     low_cpu_mem_usage: bool = False
     """Create the model as an empty shell, then materialize parameters when pretrained weights are loaded."""
+    gradient_checkpointing: bool = False
+    """Enable gradient checkpointing to reduce memory at the cost of slower backward pass."""
 
 
 REFERENCE_LOGPROBS_CACHE_PATH = os.environ.get(
