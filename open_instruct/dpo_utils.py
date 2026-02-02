@@ -542,6 +542,12 @@ def build_reference_logprobs_cache(
             else:
                 chosen_logps, rejected_logps, _ = forward_fn(model, batch, average_log_prob=average_log_prob)
 
+            logger.info(
+                f"DEBUG [ref cache] indices={batch['index'][:3].tolist()}... "
+                f"chosen_logps={chosen_logps[:3].tolist()}... "
+                f"rejected_logps={rejected_logps[:3].tolist()}..."
+            )
+
             chosen_tensor[batch["index"]] = chosen_logps
             rejected_tensor[batch["index"]] = rejected_logps
 
@@ -786,6 +792,14 @@ def _get_batch_logps(logits: torch.Tensor, labels: torch.Tensor, average_log_pro
     labels[labels == -100] = 0
 
     per_token_logps = log_softmax_and_gather(logits, labels)
+
+    logger.info(
+        f"DEBUG [_get_batch_logps] "
+        f"logits.shape={logits.shape} "
+        f"per_token_logps[0,:10]={per_token_logps[0, :10].tolist()} "
+        f"per_token_logps[1,:10]={per_token_logps[1, :10].tolist() if per_token_logps.shape[0] > 1 else 'N/A'} "
+        f"loss_mask_sums={loss_mask.sum(-1).tolist()}"
+    )
 
     if average_log_prob:
         return (per_token_logps * loss_mask).sum(-1) / loss_mask.sum(-1)
