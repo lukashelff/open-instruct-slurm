@@ -19,7 +19,7 @@ from olmo_core.config import DType
 from olmo_core.distributed import utils as distributed_utils
 from olmo_core.distributed.parallel import DataParallelType, build_world_mesh, get_dp_model_mesh
 from olmo_core.nn.attention.backend import has_flash_attn_3
-from olmo_core.nn.hf.checkpoint import load_hf_model
+from olmo_core.nn.hf.convert import convert_state_from_hf
 from olmo_core.nn.transformer.config import TransformerActivationCheckpointingMode
 from olmo_core.optim import ConstantWithWarmup, CosWithWarmup, LinearWithWarmup
 from olmo_core.train import callbacks
@@ -108,9 +108,15 @@ def _setup_model(args: dpo_utils.ExperimentConfig, device: torch.device):
     )
     model = model_config.build(init_device="cpu")
 
-    logger.info(f"Loading HuggingFace weights from {args.model_name_or_path}")
+    logger.info(f"Loading HuggingFace weights from {args.model_name_or_path} in bfloat16")
+    hf_model = transformers.AutoModelForCausalLM.from_pretrained(args.model_name_or_path, torch_dtype=torch.bfloat16)
+    converted_state_dict = convert_state_from_hf(
+        hf_model.config, hf_model.state_dict(), model_type=getattr(hf_model.config, "model_type", None)
+    )
+    del hf_model
     state_dict = model.state_dict()
-    load_hf_model(args.model_name_or_path, state_dict, work_dir=args.output_dir)
+    for key in sorted(converted_state_dict.keys()):
+        state_dict[key] = converted_state_dict[key]
     model.load_state_dict(state_dict)
     model = model.to(device=device, dtype=torch.bfloat16)
 
