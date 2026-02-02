@@ -490,7 +490,7 @@ def main(args: dpo_utils.ExperimentConfig, tc: TokenizerConfig):
     logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
     logger.info(f"  Total optimization steps = {args.max_train_steps}")
     completed_steps = 0
-    starting_epoch = 0
+    starting_epoch = 1  # 1-based epochs to match OLMo-core trainer
 
     # Potentially load in the weights and states from a previous save
     last_checkpoint_path = get_last_checkpoint_path(args)
@@ -505,13 +505,13 @@ def main(args: dpo_utils.ExperimentConfig, tc: TokenizerConfig):
         if "epoch" in training_difference:
             starting_epoch = int(training_difference.replace("epoch_", "")) + 1
             resume_step = None
-            completed_steps = starting_epoch * num_update_steps_per_epoch
+            completed_steps = (starting_epoch - 1) * num_update_steps_per_epoch  # 1-based: epoch 2 means 1 epoch done
         else:
             # need to multiply `gradient_accumulation_steps` to reflect real steps
             resume_step = int(training_difference.replace("step_", "")) * args.gradient_accumulation_steps
-            starting_epoch = resume_step // len(train_dataloader)
+            starting_epoch = (resume_step // len(train_dataloader)) + 1  # 1-based epochs
             completed_steps = resume_step // args.gradient_accumulation_steps
-            resume_step -= starting_epoch * len(train_dataloader)
+            resume_step -= (starting_epoch - 1) * len(train_dataloader)  # 1-based adjustment
 
     logger.info(f"Starting from epoch {starting_epoch} and step {completed_steps}.")
 
@@ -553,7 +553,7 @@ def main(args: dpo_utils.ExperimentConfig, tc: TokenizerConfig):
     episode = 0
     total_tokens_processed = 0
     mfu_interval_start = time.perf_counter()
-    for epoch in range(starting_epoch, args.num_epochs):
+    for epoch in range(starting_epoch, args.num_epochs + 1):
         model.train()
         train_dataloader.set_epoch(epoch)
         if last_checkpoint_path and resume_step is not None:
@@ -563,7 +563,7 @@ def main(args: dpo_utils.ExperimentConfig, tc: TokenizerConfig):
             active_dataloader = train_dataloader
         # we need to average the log probs for simpo loss
         for batch_idx, batch in enumerate(active_dataloader):
-            if epoch == 0 and batch_idx < 3:
+            if epoch == 1 and batch_idx < 3:
                 batch_indices = batch["index"].tolist() if "index" in batch else "N/A"
                 logger.info(f"DEBUG [dpo_tune_cache.py] epoch={epoch} batch={batch_idx} indices={batch_indices}")
             episode += len(batch["chosen_input_ids"]) * accelerator.num_processes
@@ -573,7 +573,7 @@ def main(args: dpo_utils.ExperimentConfig, tc: TokenizerConfig):
                 policy_chosen_logps, policy_rejected_logps, aux_loss = args.forward_fn(
                     model, batch, average_log_prob=average_log_prob, output_router_logits=args.load_balancing_loss
                 )  # `aux_loss` is only used when `args.load_balancing_loss = True`
-                if epoch == 0 and batch_idx < 3:
+                if epoch == 1 and batch_idx < 3:
                     logger.info(
                         f"DEBUG [dpo_tune_cache.py] batch={batch_idx} "
                         f"chosen_logps={policy_chosen_logps.tolist()} "
