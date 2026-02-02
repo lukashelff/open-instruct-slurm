@@ -122,7 +122,13 @@ def _setup_model(args: dpo_utils.ExperimentConfig, device: torch.device):
         if "blocks.0" in name or "embed" in name or "lm_head" in name:
             logger.info(f"DEBUG converted weight {name}: sum={p.sum().item():.6f} shape={list(p.shape)}")
     model.load_state_dict(converted_state_dict, assign=True)
+    for name, p in model.named_parameters():
+        if "blocks.0.attention.w_q" in name:
+            logger.info(f"DEBUG after load_state_dict {name}: sum={p.sum().item():.6f} dtype={p.dtype}")
     model = model.to(device=device)
+    for name, p in model.named_parameters():
+        if "blocks.0.attention.w_q" in name:
+            logger.info(f"DEBUG after .to() {name}: sum={p.sum().item():.6f} dtype={p.dtype}")
 
     weight_sum = sum(p.sum().item() for p in model.parameters())
     logger.info(f"DEBUG model_weight_sum={weight_sum}")
