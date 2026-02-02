@@ -453,8 +453,16 @@ class ExperimentConfig(
 FlatArguments = ExperimentConfig
 
 
-def compute_reference_cache_hash(args: ExperimentConfig, tc: TokenizerConfig) -> str:
-    """Compute deterministic hash for reference logprobs cache from ExperimentConfig."""
+def compute_reference_cache_hash(args: ExperimentConfig, tc: TokenizerConfig, forward_impl: str = "hf") -> str:
+    """Compute deterministic hash for reference logprobs cache from ExperimentConfig.
+
+    Args:
+        args: Experiment configuration.
+        tc: Tokenizer configuration.
+        forward_impl: Forward implementation identifier ("hf" for HuggingFace, "olmo_core" for OLMo-core).
+            Different forward implementations may produce slightly different logprobs, so they need
+            separate caches.
+    """
     transform_fn_args = [{"max_seq_length": args.max_seq_length}, {}]
     dcs = load_dataset_configs(
         args.mixer_list, args.mixer_list_splits, args.transform_fn, transform_fn_args, args.target_columns
@@ -464,6 +472,7 @@ def compute_reference_cache_hash(args: ExperimentConfig, tc: TokenizerConfig) ->
         {
             "concatenated_forward": args.concatenated_forward,
             "dataset_config_hash": dataset_config_hash,
+            "forward_impl": forward_impl,
             "loss_type": args.loss_type,
             "max_train_samples": args.max_train_samples,
             "model_name_or_path": args.model_name_or_path,
@@ -615,14 +624,6 @@ def dpo_loss(
     Returns:
         A tuple of three tensors: (losses, mean_chosen_rewards, mean_rejected_rewards).
     """
-    logger.info(
-        f"DEBUG dpo_loss "
-        f"policy_chosen={policy_chosen_logps.tolist()} "
-        f"policy_rejected={policy_rejected_logps.tolist()} "
-        f"ref_chosen={reference_chosen_logps.tolist()} "
-        f"ref_rejected={reference_rejected_logps.tolist()} "
-        f"beta={beta}"
-    )
     pi_logratios = policy_chosen_logps - policy_rejected_logps
     ref_logratios = reference_chosen_logps - reference_rejected_logps
 
