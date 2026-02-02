@@ -615,6 +615,14 @@ def dpo_loss(
     Returns:
         A tuple of three tensors: (losses, mean_chosen_rewards, mean_rejected_rewards).
     """
+    logger.info(
+        f"DEBUG dpo_loss "
+        f"policy_chosen={policy_chosen_logps.tolist()} "
+        f"policy_rejected={policy_rejected_logps.tolist()} "
+        f"ref_chosen={reference_chosen_logps.tolist()} "
+        f"ref_rejected={reference_rejected_logps.tolist()} "
+        f"beta={beta}"
+    )
     pi_logratios = policy_chosen_logps - policy_rejected_logps
     ref_logratios = reference_chosen_logps - reference_rejected_logps
 
