@@ -110,8 +110,12 @@ def _setup_model(args: dpo_utils.ExperimentConfig, device: torch.device):
 
     logger.info(f"Loading HuggingFace weights from {args.model_name_or_path} in bfloat16")
     hf_model = transformers.AutoModelForCausalLM.from_pretrained(args.model_name_or_path, torch_dtype=torch.bfloat16)
+    hf_state = hf_model.state_dict()
+    for name, p in hf_state.items():
+        if "layers.0" in name or "embed" in name or "lm_head" in name:
+            logger.info(f"DEBUG HF weight {name}: sum={p.sum().item():.6f} shape={list(p.shape)}")
     converted_state_dict = convert_state_from_hf(
-        hf_model.config, hf_model.state_dict(), model_type=getattr(hf_model.config, "model_type", None)
+        hf_model.config, hf_state, model_type=getattr(hf_model.config, "model_type", None)
     )
     del hf_model
     state_dict = model.state_dict()
