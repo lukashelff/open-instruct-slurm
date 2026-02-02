@@ -116,6 +116,9 @@ def _setup_model(args: dpo_utils.ExperimentConfig, device: torch.device):
 
     weight_sum = sum(p.sum().item() for p in model.parameters())
     logger.info(f"DEBUG model_weight_sum={weight_sum}")
+    for name, p in model.named_parameters():
+        if "blocks.0" in name or "embed" in name or "lm_head" in name:
+            logger.info(f"DEBUG weight {name}: sum={p.sum().item():.6f} shape={list(p.shape)}")
 
     logger.info(f"Applying activation checkpointing (budget={args.activation_memory_budget})...")
     model.apply_activation_checkpointing(
