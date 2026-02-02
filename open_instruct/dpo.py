@@ -121,15 +121,17 @@ def _setup_model(args: dpo_utils.ExperimentConfig, device: torch.device):
     for name, p in converted_state_dict.items():
         if "blocks.0" in name or "embed" in name or "lm_head" in name:
             logger.info(f"DEBUG converted weight {name}: sum={p.sum().item():.6f} shape={list(p.shape)}")
+    model_keys = set(model.state_dict().keys())
+    converted_keys = set(converted_state_dict.keys())
+    missing_in_converted = model_keys - converted_keys
+    extra_in_converted = converted_keys - model_keys
+    if missing_in_converted:
+        logger.warning(f"Keys in model but not in converted: {missing_in_converted}")
+    if extra_in_converted:
+        logger.warning(f"Keys in converted but not in model: {extra_in_converted}")
     converted_state_dict_gpu = {k: v.to(device=device) for k, v in converted_state_dict.items()}
-    for name, p in converted_state_dict_gpu.items():
-        if "blocks.0.attention.w_q" in name:
-            logger.info(f"DEBUG converted on GPU {name}: sum={p.sum().item():.6f} dtype={p.dtype}")
     model = model.to(device=device)
-    model.load_state_dict(converted_state_dict_gpu, assign=True)
-    for name, p in model.named_parameters():
-        if "blocks.0.attention.w_q" in name:
-            logger.info(f"DEBUG after load on GPU {name}: sum={p.sum().item():.6f} dtype={p.dtype}")
+    model.load_state_dict(converted_state_dict_gpu, assign=True, strict=False)
 
     weight_sum = sum(p.sum().item() for p in model.parameters())
     logger.info(f"DEBUG model_weight_sum={weight_sum}")
