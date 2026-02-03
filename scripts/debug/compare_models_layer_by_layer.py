@@ -457,6 +457,88 @@ def main():
         status = "✓" if cos_diff == 0 and sin_diff == 0 else "✗"
         print(f"  seq_len={test_len:3d}: cos_diff={cos_diff:.6e}, sin_diff={sin_diff:.6e} {status}")
 
+    # Test 10: Layer-by-layer at failing sequence length
+    print("\n" + "=" * 60)
+    print("TEST 10: LAYER-BY-LAYER AT FAILING SEQ_LEN=10")
+    print("=" * 60)
+
+    hf_hidden_states_10 = []
+    olmo_hidden_states_10 = []
+
+    def hf_hook_10(module, input, output):
+        hf_hidden_states_10.append(output[0].detach().clone())
+
+    def olmo_hook_10(module, input, output):
+        olmo_hidden_states_10.append(output.detach().clone())
+
+    hf_handles_10 = []
+    olmo_handles_10 = []
+    for i, layer in enumerate(hf_model.model.layers):
+        hf_handles_10.append(layer.register_forward_hook(hf_hook_10))
+    olmo_block_keys_10 = list(olmo_model.blocks.keys())
+    for key in olmo_block_keys_10:
+        olmo_handles_10.append(olmo_model.blocks[key].register_forward_hook(olmo_hook_10))
+
+    torch.manual_seed(42)
+    input_10 = torch.randint(1, 100352, (1, 10), device=device)
+
+    with torch.no_grad():
+        _ = hf_model(input_10)
+        _ = olmo_model(input_10)
+
+    for h in hf_handles_10 + olmo_handles_10:
+        h.remove()
+
+    print("Layer-by-layer comparison at seq_len=10:")
+    first_diff_layer_10 = None
+    for i in range(len(hf_hidden_states_10)):
+        diff = (hf_hidden_states_10[i] - olmo_hidden_states_10[i]).abs()
+        max_diff = diff.max().item()
+        mean_diff = diff.mean().item()
+        status = "✓" if max_diff < 1e-3 else "✗"
+        print(f"  Layer {i:2d}: max_diff={max_diff:.6e}, mean_diff={mean_diff:.6e} {status}")
+        if max_diff > 0.01 and first_diff_layer_10 is None:
+            first_diff_layer_10 = i
+
+    # Compare at seq_len=20 (passing)
+    print("\n" + "=" * 60)
+    print("TEST 11: LAYER-BY-LAYER AT PASSING SEQ_LEN=20 (for reference)")
+    print("=" * 60)
+
+    hf_hidden_states_20 = []
+    olmo_hidden_states_20 = []
+
+    def hf_hook_20(module, input, output):
+        hf_hidden_states_20.append(output[0].detach().clone())
+
+    def olmo_hook_20(module, input, output):
+        olmo_hidden_states_20.append(output.detach().clone())
+
+    hf_handles_20 = []
+    olmo_handles_20 = []
+    for i, layer in enumerate(hf_model.model.layers):
+        hf_handles_20.append(layer.register_forward_hook(hf_hook_20))
+    for key in olmo_block_keys_10:
+        olmo_handles_20.append(olmo_model.blocks[key].register_forward_hook(olmo_hook_20))
+
+    torch.manual_seed(42)
+    input_20 = torch.randint(1, 100352, (1, 20), device=device)
+
+    with torch.no_grad():
+        _ = hf_model(input_20)
+        _ = olmo_model(input_20)
+
+    for h in hf_handles_20 + olmo_handles_20:
+        h.remove()
+
+    print("Layer-by-layer comparison at seq_len=20:")
+    for i in range(len(hf_hidden_states_20)):
+        diff = (hf_hidden_states_20[i] - olmo_hidden_states_20[i]).abs()
+        max_diff = diff.max().item()
+        mean_diff = diff.mean().item()
+        status = "✓" if max_diff < 1e-3 else "✗"
+        print(f"  Layer {i:2d}: max_diff={max_diff:.6e}, mean_diff={mean_diff:.6e} {status}")
+
     print("\n" + "=" * 60)
     print("SUMMARY")
     print("=" * 60)
