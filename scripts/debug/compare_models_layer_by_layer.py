@@ -430,6 +430,33 @@ def main():
     if failed_lengths:
         print(f"\nFailed lengths: {failed_lengths}")
 
+    # Test 9: Compare RoPE embeddings directly
+    print("\n" + "=" * 60)
+    print("TEST 9: DIRECT ROPE COMPARISON")
+    print("=" * 60)
+
+    for test_len in [8, 10, 17, 20, 32]:
+        torch.manual_seed(42)
+        test_input = torch.randint(1, 100352, (1, test_len), device=device)
+        position_ids = torch.arange(test_len, device=device).unsqueeze(0)
+
+        with torch.no_grad():
+            hf_cos, hf_sin = hf_model.model.rotary_emb(test_input, position_ids)
+            olmo_pos_sin, olmo_pos_cos = olmo_model.blocks["0"].attention.rope._get_rotary_embedding(
+                test_len, device
+            )
+
+        hf_cos_flat = hf_cos.squeeze()
+        hf_sin_flat = hf_sin.squeeze()
+        olmo_cos_flat = olmo_pos_cos[:test_len]
+        olmo_sin_flat = olmo_pos_sin[:test_len]
+
+        cos_diff = (hf_cos_flat - olmo_cos_flat).abs().max().item()
+        sin_diff = (hf_sin_flat - olmo_sin_flat).abs().max().item()
+
+        status = "✓" if cos_diff == 0 and sin_diff == 0 else "✗"
+        print(f"  seq_len={test_len:3d}: cos_diff={cos_diff:.6e}, sin_diff={sin_diff:.6e} {status}")
+
     print("\n" + "=" * 60)
     print("SUMMARY")
     print("=" * 60)
