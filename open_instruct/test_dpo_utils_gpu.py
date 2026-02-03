@@ -11,6 +11,7 @@ import tempfile
 import unittest
 
 import torch
+from olmo_core.nn.transformer import TransformerConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from open_instruct import dpo_utils, model_utils
@@ -156,6 +157,62 @@ class TestForwardFunctionsOlmo(unittest.TestCase):
         hf_chosen, hf_rejected, _ = dpo_utils.concatenated_forward(self.hf_model, hf_batch)
 
         self.assertFalse(torch.allclose(olmo_chosen, hf_chosen))
+
+
+@unittest.skipUnless(torch.cuda.is_available(), "CUDA not available")
+class TestConcatenatedVsSeparateForwardOlmo(unittest.TestCase):
+    """Test that concatenated_forward_olmo produces same results as separate_forward_olmo.
+
+    This test verifies that packing chosen and rejected sequences together with doc_lens
+    produces identical logits to processing them separately. If this fails, it indicates
+    a bug in how document boundaries are handled in the packed attention.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        config = TransformerConfig.olmo2_1B(vocab_size=100352)
+        config.n_layers = 2
+        cls.model = config.build().cuda().to(torch.bfloat16)
+
+    def _make_batch_with_shared_prefix(self, prefix_len: int = 50, response_len: int = 20):
+        """Create a batch where chosen and rejected share a prefix but have different responses."""
+        vocab_size = 100352
+        shared_prefix = torch.randint(1, vocab_size, (1, prefix_len)).cuda()
+        chosen_response = torch.randint(1, vocab_size, (1, response_len)).cuda()
+        rejected_response = torch.randint(1, vocab_size, (1, response_len)).cuda()
+
+        chosen_ids = torch.cat([shared_prefix, chosen_response], dim=1)
+        rejected_ids = torch.cat([shared_prefix, rejected_response], dim=1)
+
+        chosen_labels = torch.cat([torch.full((1, prefix_len), -100, device="cuda"), chosen_response], dim=1)
+        rejected_labels = torch.cat([torch.full((1, prefix_len), -100, device="cuda"), rejected_response], dim=1)
+
+        return {
+            "chosen_input_ids": chosen_ids,
+            "chosen_labels": chosen_labels,
+            "chosen_attention_mask": torch.ones_like(chosen_ids),
+            "rejected_input_ids": rejected_ids,
+            "rejected_labels": rejected_labels,
+            "rejected_attention_mask": torch.ones_like(rejected_ids),
+        }
+
+    def test_concatenated_equals_separate_forward(self):
+        """Verify concatenated and separate forward produce identical results."""
+        torch.manual_seed(42)
+        batch = self._make_batch_with_shared_prefix()
+
+        with torch.no_grad():
+            concat_chosen, concat_rejected, _ = dpo_utils.concatenated_forward_olmo(self.model, batch)
+            sep_chosen, sep_rejected, _ = dpo_utils.separate_forward_olmo(self.model, batch)
+
+        self.assertTrue(
+            torch.allclose(concat_chosen, sep_chosen, atol=1e-4),
+            f"Chosen logps differ: concat={concat_chosen.tolist()}, sep={sep_chosen.tolist()}",
+        )
+        self.assertTrue(
+            torch.allclose(concat_rejected, sep_rejected, atol=1e-4),
+            f"Rejected logps differ: concat={concat_rejected.tolist()}, sep={sep_rejected.tolist()}",
+        )
 
 
 if __name__ == "__main__":
