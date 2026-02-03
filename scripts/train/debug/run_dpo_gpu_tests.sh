@@ -14,4 +14,4 @@ uv run python mason.py \
     --budget ai2/oe-adapt \
     --no_auto_dataset_cache \
     --no-host-networking \
-    --gpus 1 -- uv run pytest open_instruct/test_dpo_utils_gpu.py -v -x
+    --gpus 1 -- uv run pytest open_instruct/test_dpo_utils_gpu.py -v
