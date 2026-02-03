@@ -408,6 +408,22 @@ def main():
     print(f"  pad_5: {(hf_content_pad_5 - olmo_content_pad_5).abs().max().item():.6e}")
     print(f"  pad_10: {(hf_content_pad_10 - olmo_content_pad_10).abs().max().item():.6e}")
 
+    # Test 8: Systematic sequence length test
+    print("\n" + "=" * 60)
+    print("TEST 8: SYSTEMATIC SEQUENCE LENGTH TEST")
+    print("=" * 60)
+
+    print("Testing HF vs OLMo at different sequence lengths:")
+    for seq_len_test in range(8, 25):
+        torch.manual_seed(42)
+        test_input = torch.randint(1, 100352, (1, seq_len_test), device=device)
+        with torch.no_grad():
+            hf_out = hf_model(test_input).logits
+            olmo_out = olmo_model(test_input)
+        diff = (hf_out - olmo_out).abs().max().item()
+        status = "✓" if diff == 0 else "✗"
+        print(f"  seq_len={seq_len_test:2d}: max_diff={diff:.6e} {status}")
+
     print("\n" + "=" * 60)
     print("SUMMARY")
     print("=" * 60)
@@ -418,6 +434,7 @@ def main():
     print("Test 5 (Packed vs batched): Check doc_lens implementation")
     print("Test 6 (Reproducibility): Check self-consistency of both models")
     print("Test 7 (Padding lengths): Check if padding affects content logits")
+    print("Test 8 (Sequence lengths): Check which lengths produce differences")
 
 
 if __name__ == "__main__":
