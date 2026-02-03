@@ -140,11 +140,11 @@ class HFDataLoader(data_loader.DataLoaderBase):
         self._drop_last = drop_last
         self._shuffle = shuffle
         self._excluded_indices: set[int] = set()
-        self._epoch: int = 0
+        self._epoch: int = 1  # Start at epoch 1 to match HuggingFace/accelerate
         self._current_iter: Iterator[dict[str, Any]] | None = None
         self._device = device
 
-        self._reshard(epoch=0)
+        self._reshard(epoch=1)
 
     def __next__(self) -> dict[str, Any]:
         if self._current_iter is None:
