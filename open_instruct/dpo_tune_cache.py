@@ -411,7 +411,11 @@ def main(args: dpo_utils.ExperimentConfig, tc: TokenizerConfig):
         collate_fn = dpo_utils.DataCollatorForSeq2SeqDPO(tokenizer=tokenizer, model=model, padding="longest")
 
     train_dataloader = DataLoader(
-        train_dataset, shuffle=True, collate_fn=collate_fn, batch_size=args.per_device_train_batch_size, drop_last=True
+        train_dataset,
+        shuffle=args.shuffle,
+        collate_fn=collate_fn,
+        batch_size=args.per_device_train_batch_size,
+        drop_last=True,
     )
 
     # Optimizer

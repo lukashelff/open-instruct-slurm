@@ -184,6 +184,8 @@ class DatasetConfig:
     """Immediately exit after caching the dataset"""
     config_hash: str | None = None
     """The hash of the dataset configuration."""
+    shuffle: bool = True
+    """Whether to shuffle the dataset. Set to False for debugging to ensure deterministic ordering."""
 
 
 @dataclass

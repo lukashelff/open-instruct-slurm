@@ -84,6 +84,7 @@ class HFDataLoader(data_loader.DataLoaderBase):
         collator: Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None,
         device: torch.device | None = None,
         drop_last: bool = True,
+        shuffle: bool = True,
     ) -> None:
         """Initialize the HFDataLoader.
 
@@ -100,6 +101,7 @@ class HFDataLoader(data_loader.DataLoaderBase):
             device: Device to move tensors to.
             drop_last: If True, drop the last incomplete batch. If False, pad the last batch
                 with repeated indices to fill a complete batch.
+            shuffle: If True, shuffle the dataset. If False, use sequential ordering.
 
         Note:
             The dataset must have an 'index' column for tracking samples across epochs.
@@ -136,6 +138,7 @@ class HFDataLoader(data_loader.DataLoaderBase):
         self._collator = collator if collator is not None else (lambda x: {"examples": x})
         self._automatic_reshuffle = automatic_reshuffle
         self._drop_last = drop_last
+        self._shuffle = shuffle
         self._excluded_indices: set[int] = set()
         self._epoch: int = 0
         self._current_iter: Iterator[dict[str, Any]] | None = None
@@ -217,19 +220,19 @@ class HFDataLoader(data_loader.DataLoaderBase):
         """Reshard the dataset for a given epoch.
 
         Uses index-based shuffling to avoid copying the dataset.
-        Uses PyTorch RNG to match PyTorch DataLoader shuffle behavior.
+        Uses global PyTorch RNG to match HuggingFace DataLoader shuffle behavior.
         """
-        generator = torch.Generator()
-        generator.manual_seed(self.seed + epoch)
         dataset_len = len(self._full_dataset)
-        all_indices = torch.randperm(dataset_len, generator=generator).numpy()
-        test_gen = torch.Generator().manual_seed(123)
-        test_perm = torch.randperm(dataset_len, generator=test_gen)
+        if self._shuffle:
+            if epoch == 0:
+                torch.manual_seed(self.seed)
+            all_indices = torch.randperm(dataset_len).numpy()
+        else:
+            all_indices = np.arange(dataset_len)
         logger.info(
-            f"DEBUG [HFDataLoader] _reshard epoch={epoch} seed={self.seed} "
+            f"DEBUG [HFDataLoader] _reshard epoch={epoch} seed={self.seed} shuffle={self._shuffle} "
             f"dataset_len={dataset_len} "
-            f"first_10_indices={all_indices[:10].tolist()} "
-            f"test_randperm_same_len_seed123={test_perm[:10].tolist()}"
+            f"first_10_indices={all_indices[:10].tolist()}"
         )
         if self._excluded_indices:
             mask = np.isin(all_indices, list(self._excluded_indices), invert=True)
