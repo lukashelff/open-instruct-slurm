@@ -12,6 +12,8 @@ import tempfile
 import unittest
 
 import torch
+from olmo_core.nn.attention import AttentionConfig
+from olmo_core.nn.attention.backend import has_flash_attn_2
 from olmo_core.nn.transformer import TransformerConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -163,6 +165,7 @@ class TestForwardFunctionsOlmo(unittest.TestCase):
 
 
 @unittest.skipUnless(torch.cuda.is_available(), "CUDA not available")
+@unittest.skipUnless(has_flash_attn_2(), "Flash attention required for document masking")
 class TestConcatenatedVsSeparateForwardOlmo(unittest.TestCase):
     """Test that concatenated_forward_olmo produces same results as separate_forward_olmo.
 
@@ -175,6 +178,14 @@ class TestConcatenatedVsSeparateForwardOlmo(unittest.TestCase):
     def setUpClass(cls):
         config = TransformerConfig.olmo2_1B(vocab_size=100352)
         config.n_layers = 2
+        config.block.attention = AttentionConfig(
+            n_heads=config.block.attention.n_heads,
+            n_kv_heads=config.block.attention.n_kv_heads,
+            bias=config.block.attention.bias,
+            rope=config.block.attention.rope,
+            qk_norm=config.block.attention.qk_norm,
+            backend="flash_2",
+        )
         cls.model = config.build().cuda().to(torch.bfloat16)
 
     def _make_batch_with_shared_prefix(self, prefix_len: int = 50, response_len: int = 20):
