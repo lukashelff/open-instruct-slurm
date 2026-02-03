@@ -715,14 +715,24 @@ class LMJudgeVerifier(VerifierFunction):
                         logger.error("Cannot fit request within context window even after truncation.")
                         return VerificationResult(score=0.0, cost=0.0, reasoning="Error: Context window exceeded")
                 # end of Faeze's context window check
-                response = await acompletion(
-                    model=self.verifier_config.llm_judge_model,
-                    messages=messages,
-                    temperature=self.verifier_config.llm_judge_temperature,
-                    max_completion_tokens=self.verifier_config.llm_judge_max_tokens,
-                    seed=self.verifier_config.seed,
-                    timeout=self.verifier_config.llm_judge_timeout,
-                )
+                # For hosted_vllm/ (self-hosted judge), pass api_base and api_key so litellm
+                # does not send "fake-api-key" (which some servers reject).
+                acompletion_kwargs: dict = {
+                    "model": self.verifier_config.llm_judge_model,
+                    "messages": messages,
+                    "temperature": self.verifier_config.llm_judge_temperature,
+                    "max_completion_tokens": self.verifier_config.llm_judge_max_tokens,
+                    "seed": self.verifier_config.seed,
+                    "timeout": self.verifier_config.llm_judge_timeout,
+                }
+                if self.verifier_config.llm_judge_model.lower().startswith("hosted_vllm/"):
+                    api_base = os.environ.get("HOSTED_VLLM_API_BASE")
+                    api_key = os.environ.get("HOSTED_VLLM_API_KEY")
+                    if api_base is not None:
+                        acompletion_kwargs["api_base"] = api_base
+                    if api_key is not None:
+                        acompletion_kwargs["api_key"] = api_key
+                response = await acompletion(**acompletion_kwargs)
                 reasoning, score = self.parse_completion(response)
                 cost = self.get_cost(response, self.verifier_config.llm_judge_model)
                 # normalize score to be between 0 and 1

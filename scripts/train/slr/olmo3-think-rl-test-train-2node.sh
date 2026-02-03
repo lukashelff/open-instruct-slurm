@@ -2,14 +2,14 @@
 # OLMo-3 7B Think RL (GRPO) - Slurm 2-node run.
 # grpo_fast.py supports multi-node when the Ray cluster is already running (see configs/beaker_configs/ray_node_setup.sh).
 # This script uses one srun with 2 tasks: head task starts Ray head then runs grpo_fast.py; worker task starts Ray worker then monitors until head is gone.
-#SBATCH --job-name=olmo-GRPO-Training
+#SBATCH --job-name=olmo-GRPO-test2-2n
 #SBATCH --partition=all
-#SBATCH --nodes=5
+#SBATCH --nodes=2
 #SBATCH --gpus-per-node=8
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=64
 #SBATCH --mem=1600G
-#SBATCH --time=24:00:00
+#SBATCH --time=4:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 #SBATCH --qos=normal
@@ -72,12 +72,12 @@ APPTAINER_ENV=(
 GRPO_ARGS="--exp_name pipelinerl_7b_olmo3_thinker_test2_2node \
   --queue_dashboard_port 8765 \
   --beta 0.0 \
-  --num_samples_per_prompt_rollout 8 \
-  --num_unique_prompts_rollout 64 \
-  --num_mini_batches 1 \
+  --num_samples_per_prompt_rollout 4 \
+  --num_unique_prompts_rollout 16 \
+  --num_mini_batches 2 \
   --num_epochs 1 \
   --learning_rate 1e-6 \
-  --per_device_train_batch_size 1 \
+  --per_device_train_batch_size 2 \
   --output_dir /stage/output/olmo3_7b_think_rl \
   --rollouts_save_path /stage/output/olmo3_7b_think_rl/rollouts \
   --dataset_local_cache_dir /stage/.cache/open_instruct_dataset_cache \
@@ -86,9 +86,9 @@ GRPO_ARGS="--exp_name pipelinerl_7b_olmo3_thinker_test2_2node \
   --dataset_mixer_list_splits train \
   --dataset_mixer_eval_list allenai/Dolci-Think-RL-7B 8 \
   --dataset_mixer_eval_list_splits train \
-  --max_prompt_token_length 10240 \
-  --response_length 32768 \
-  --pack_length 35840 \
+  --max_prompt_token_length 1024 \
+  --response_length 4096 \
+  --pack_length 5120 \
   --model_name_or_path allenai/Olmo-3-7B-Think-DPO \
   --chat_template_name olmo_thinker \
   --non_stop_penalty False \
@@ -96,30 +96,30 @@ GRPO_ARGS="--exp_name pipelinerl_7b_olmo3_thinker_test2_2node \
   --temperature 1.0 \
   --ground_truths_key ground_truth \
   --sft_messages_key prompt \
-  --total_episodes 10000000 \
+  --total_episodes 128 \
   --deepspeed_stage 3 \
-  --num_learners_per_node 8 \
-  --vllm_num_engines 32 \
+  --num_learners_per_node 4 4 \
+  --vllm_num_engines 8 \
   --vllm_tensor_parallel_size 1 \
-  # --vllm_gpu_memory_utilization 0.35 \
-  # --vllm_enforce_eager \
-  # --vllm_sync_backend nccl \
+  --vllm_gpu_memory_utilization 0.35 \
+  --vllm_enforce_eager \
+  --vllm_sync_backend nccl \
   --lr_scheduler_type constant \
   --apply_verifiable_reward true \
   --llm_judge_model hosted_vllm/Qwen/Qwen3-4B-Instruct-2507 \
   --llm_judge_timeout 600 \
   --llm_judge_max_tokens 2048 \
-  --llm_judge_max_context_length 32768 \
-  --clip_higher 0.272 \
+  --llm_judge_max_context_length 8192 \
   --code_api_url https://p9f1719l7f.execute-api.us-west-2.amazonaws.com/prod/test_program \
   --code_pass_rate_reward_threshold 0.99 \
   --seed 1 \
-  --local_eval_every 50 \
-  --save_freq 25 \
+  --local_eval_every 2 \
+  --save_freq 10 \
   --try_launch_beaker_eval_jobs_on_weka False \
   --gradient_checkpointing \
   --with_tracking \
-  --checkpoint_state_freq 100 \
+  --clip_higher 0.272 \
+  --checkpoint_state_freq 0 \
   --backend_timeout 1200 \
   --inflight_updates true \
   --async_steps 8 \

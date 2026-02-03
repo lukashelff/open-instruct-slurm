@@ -2119,7 +2119,16 @@ def main(
     beaker_config, wandb_url = setup_experiment_tracking(args, tc, model_config)
 
     # We have to initialize ray earlier for constructing Tools (they are implemented as ray actors).
-    ray.init(dashboard_host="0.0.0.0", runtime_env={"excludes": [".git/"], "env_vars": dict(os.environ)})
+    # If RAY_ADDRESS is set (e.g. by a multi-node Slurm script), connect to the existing cluster
+    # so placement groups can use STRICT_SPREAD across nodes. Otherwise start a local cluster.
+    ray_init_kwargs: dict = {
+        "dashboard_host": "0.0.0.0",
+        "runtime_env": {"excludes": [".git/"], "env_vars": dict(os.environ)},
+    }
+    if os.environ.get("RAY_ADDRESS"):
+        ray_init_kwargs["address"] = "auto"
+        logger.info("Connecting to existing Ray cluster (RAY_ADDRESS is set)")
+    ray.init(**ray_init_kwargs)
 
     tool_actors, tool_definitions, tool_stop_sequences, tool_call_names = initialize_tools(tools_config, tokenizer)
     logger.info(
