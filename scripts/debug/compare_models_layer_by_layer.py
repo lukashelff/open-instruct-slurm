@@ -46,6 +46,11 @@ def main():
     print(f"\nInput shape: {input_ids.shape}")
     print(f"Input tokens: {input_ids[0, :10].tolist()}...")
 
+    # Test 1: Simple forward (no padding)
+    print("\n" + "=" * 60)
+    print("TEST 1: SIMPLE FORWARD (no padding)")
+    print("=" * 60)
+
     # Compare embeddings
     print("\n" + "=" * 60)
     print("EMBEDDING COMPARISON")
@@ -178,6 +183,170 @@ def main():
             olmo_post_norm = olmo_block.feed_forward_norm(olmo_input)
             post_norm_diff = (hf_post_norm - olmo_post_norm).abs().max().item()
             print(f"  Pre-FFN norm diff: {post_norm_diff:.6e}")
+
+    # Test 2: Padded input with attention mask
+    print("\n" + "=" * 60)
+    print("TEST 2: PADDED INPUT WITH ATTENTION MASK")
+    print("=" * 60)
+
+    pad_token_id = 0
+    content_len = 15
+    padded_seq_len = 20
+    padding_len = padded_seq_len - content_len
+
+    torch.manual_seed(42)
+    content_tokens = torch.randint(1, 100352, (1, content_len), device=device)
+    padding_tokens = torch.full((1, padding_len), pad_token_id, device=device)
+    padded_input_ids = torch.cat([content_tokens, padding_tokens], dim=1)
+
+    attention_mask = torch.ones(1, padded_seq_len, device=device)
+    attention_mask[0, content_len:] = 0
+
+    print(f"Input shape: {padded_input_ids.shape}")
+    print(f"Content length: {content_len}, Padding length: {padding_len}")
+    print(f"Attention mask: {attention_mask[0].tolist()}")
+
+    with torch.no_grad():
+        hf_logits_padded = hf_model(padded_input_ids, attention_mask=attention_mask).logits
+        olmo_logits_padded = olmo_model(padded_input_ids)
+
+    logits_diff_content = (hf_logits_padded[0, :content_len] - olmo_logits_padded[0, :content_len]).abs()
+    logits_diff_padding = (hf_logits_padded[0, content_len:] - olmo_logits_padded[0, content_len:]).abs()
+
+    print(f"\nContent region (0:{content_len}):")
+    print(f"  Max diff: {logits_diff_content.max().item():.6e}")
+    print(f"  Mean diff: {logits_diff_content.mean().item():.6e}")
+
+    print(f"\nPadding region ({content_len}:{padded_seq_len}):")
+    print(f"  Max diff: {logits_diff_padding.max().item():.6e}")
+    print(f"  Mean diff: {logits_diff_padding.mean().item():.6e}")
+
+    print("\nPer-position max diff (content region):")
+    for pos in range(content_len):
+        pos_diff = logits_diff_content[pos, :].max().item()
+        print(f"  Position {pos:2d}: max_diff={pos_diff:.6e}")
+
+    # Test 3: Batched forward (like DPO chosen/rejected)
+    print("\n" + "=" * 60)
+    print("TEST 3: BATCHED FORWARD (simulating DPO chosen/rejected)")
+    print("=" * 60)
+
+    torch.manual_seed(42)
+    batch_size = 2
+    seq_len_batch = 20
+    batched_input_ids = torch.randint(1, 100352, (batch_size, seq_len_batch), device=device)
+
+    print(f"Batch shape: {batched_input_ids.shape}")
+
+    with torch.no_grad():
+        hf_logits_batch = hf_model(batched_input_ids).logits
+        olmo_logits_batch = olmo_model(batched_input_ids)
+
+    for b in range(batch_size):
+        batch_diff = (hf_logits_batch[b] - olmo_logits_batch[b]).abs()
+        print(f"\nBatch {b}:")
+        print(f"  Max diff: {batch_diff.max().item():.6e}")
+        print(f"  Mean diff: {batch_diff.mean().item():.6e}")
+
+    # Test 4: Batched forward with padding (like actual DPO data)
+    print("\n" + "=" * 60)
+    print("TEST 4: BATCHED FORWARD WITH DIFFERENT PADDING PER SAMPLE")
+    print("=" * 60)
+
+    torch.manual_seed(42)
+    batch_size = 2
+    max_seq_len = 20
+    seq_lens = [15, 12]
+
+    batched_padded_ids = torch.full((batch_size, max_seq_len), pad_token_id, device=device)
+    batched_attn_mask = torch.zeros(batch_size, max_seq_len, device=device)
+
+    for b, seq_len_b in enumerate(seq_lens):
+        batched_padded_ids[b, :seq_len_b] = torch.randint(1, 100352, (seq_len_b,), device=device)
+        batched_attn_mask[b, :seq_len_b] = 1
+
+    print(f"Batch shape: {batched_padded_ids.shape}")
+    print(f"Sequence lengths: {seq_lens}")
+    print(f"Attention mask row sums: {batched_attn_mask.sum(dim=1).tolist()}")
+
+    with torch.no_grad():
+        hf_logits_bp = hf_model(batched_padded_ids, attention_mask=batched_attn_mask).logits
+        olmo_logits_bp = olmo_model(batched_padded_ids)
+
+    for b, seq_len_b in enumerate(seq_lens):
+        content_diff = (hf_logits_bp[b, :seq_len_b] - olmo_logits_bp[b, :seq_len_b]).abs()
+        padding_diff = (hf_logits_bp[b, seq_len_b:] - olmo_logits_bp[b, seq_len_b:]).abs()
+        print(f"\nBatch {b} (content_len={seq_len_b}):")
+        print(f"  Content max diff: {content_diff.max().item():.6e}")
+        print(f"  Content mean diff: {content_diff.mean().item():.6e}")
+        print(f"  Padding max diff: {padding_diff.max().item():.6e}")
+        print(f"  Padding mean diff: {padding_diff.mean().item():.6e}")
+
+    # Test 5: OLMo-core with doc_lens (packed forward)
+    print("\n" + "=" * 60)
+    print("TEST 5: OLMO-CORE PACKED FORWARD (doc_lens) vs BATCHED")
+    print("=" * 60)
+
+    torch.manual_seed(42)
+    doc1_len = 10
+    doc2_len = 8
+    doc1_tokens = torch.randint(1, 100352, (doc1_len,), device=device)
+    doc2_tokens = torch.randint(1, 100352, (doc2_len,), device=device)
+
+    packed_input = torch.cat([doc1_tokens, doc2_tokens]).unsqueeze(0)
+    doc_lens = torch.tensor([doc1_len, doc2_len], device=device)
+
+    batched_doc1 = doc1_tokens.unsqueeze(0)
+    batched_doc2 = doc2_tokens.unsqueeze(0)
+
+    print(f"Packed input shape: {packed_input.shape}")
+    print(f"doc_lens: {doc_lens.tolist()}")
+    print(f"Batched doc1 shape: {batched_doc1.shape}")
+    print(f"Batched doc2 shape: {batched_doc2.shape}")
+
+    with torch.no_grad():
+        olmo_packed_logits = olmo_model(packed_input, doc_lens=doc_lens, max_doc_lens=[max(doc1_len, doc2_len)])
+        olmo_batched_doc1_logits = olmo_model(batched_doc1)
+        olmo_batched_doc2_logits = olmo_model(batched_doc2)
+
+    olmo_packed_doc1 = olmo_packed_logits[0, :doc1_len]
+    olmo_packed_doc2 = olmo_packed_logits[0, doc1_len:doc1_len + doc2_len]
+
+    doc1_diff = (olmo_packed_doc1 - olmo_batched_doc1_logits[0]).abs()
+    doc2_diff = (olmo_packed_doc2 - olmo_batched_doc2_logits[0]).abs()
+
+    print(f"\nDoc1 (packed vs batched):")
+    print(f"  Max diff: {doc1_diff.max().item():.6e}")
+    print(f"  Mean diff: {doc1_diff.mean().item():.6e}")
+
+    print(f"\nDoc2 (packed vs batched):")
+    print(f"  Max diff: {doc2_diff.max().item():.6e}")
+    print(f"  Mean diff: {doc2_diff.mean().item():.6e}")
+
+    # Also compare HF batched vs OLMo batched
+    with torch.no_grad():
+        hf_doc1_logits = hf_model(batched_doc1).logits
+        hf_doc2_logits = hf_model(batched_doc2).logits
+
+    hf_olmo_doc1_diff = (hf_doc1_logits[0] - olmo_batched_doc1_logits[0]).abs()
+    hf_olmo_doc2_diff = (hf_doc2_logits[0] - olmo_batched_doc2_logits[0]).abs()
+
+    print(f"\nHF vs OLMo batched (doc1):")
+    print(f"  Max diff: {hf_olmo_doc1_diff.max().item():.6e}")
+    print(f"  Mean diff: {hf_olmo_doc1_diff.mean().item():.6e}")
+
+    print(f"\nHF vs OLMo batched (doc2):")
+    print(f"  Max diff: {hf_olmo_doc2_diff.max().item():.6e}")
+    print(f"  Mean diff: {hf_olmo_doc2_diff.mean().item():.6e}")
+
+    print("\n" + "=" * 60)
+    print("SUMMARY")
+    print("=" * 60)
+    print("Test 1 (Simple forward): Perfect match expected")
+    print("Test 2 (Padded input): Check if attention mask affects OLMo-core")
+    print("Test 3 (Batched forward): Check batch consistency")
+    print("Test 4 (Batched with padding): Real DPO scenario")
+    print("Test 5 (Packed vs batched): Check doc_lens implementation")
 
 
 if __name__ == "__main__":
