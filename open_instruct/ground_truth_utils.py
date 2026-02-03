@@ -935,6 +935,12 @@ def build_all_verifiers(args, streaming_config=None) -> dict[str, VerifierFuncti
             continue
 
         verifier_config = subclass.get_config_class().from_args(args, streaming_config)
+        # Only register code verifier when a code API is configured (test-case verifier needs a running backend).
+        # Otherwise we would deploy a verifier that always fails and spams connection refused.
+        if subclass == CodeVerifier:
+            code_url = (getattr(verifier_config, "code_api_url", "") or "").strip()
+            if not code_url.startswith("http"):
+                continue
         instance = subclass(verifier_config)
         verifiers[instance.name.lower()] = instance
 

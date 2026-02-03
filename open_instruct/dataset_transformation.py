@@ -1411,6 +1411,9 @@ def rlvr_tokenize_v3(
     pass_tools_to_chat_template: bool = True,
 ):
     prompt = row.pop(sft_messages_key)
+    # Support datasets (e.g. Dolci-Think-RL-7B) where the column is a string instead of messages list.
+    if isinstance(prompt, str):
+        prompt = [{"role": "user", "content": prompt}] if prompt.strip() else []
     assert len(prompt) > 0, "Empty prompt in dataset"
     # if the prompt has multiple messages, make sure we don't end in an assistant message.
     if len(prompt) > 1 and prompt[-1]["role"] == "assistant":

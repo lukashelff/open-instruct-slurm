@@ -343,7 +343,7 @@ class StreamingDataLoaderConfig:
     remap_verifier: str | None = None
 
     # LLM judge verifier
-    llm_judge_model: str = "azure/gpt-4o-mini-standard"
+    llm_judge_model: str = "openai/gpt-4o-mini"
     llm_judge_max_tokens: int = 2048
     llm_judge_max_context_length: int = 8192
     llm_judge_temperature: float = 1.0

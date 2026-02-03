@@ -1201,6 +1201,8 @@ def setup_datasets(
             "system_prompt_override": system_prompt_override,
             "tool_definitions": tool_definitions,
             "pass_tools_to_chat_template": pass_tools_to_chat_template,
+            "sft_messages_key": tc.sft_messages_key,
+            "ground_truths_key": tc.ground_truths_key,
         },
         {"max_prompt_token_length": streaming_config.max_prompt_token_length},
     ]

@@ -13,6 +13,8 @@ birr/
 
 oe-eval-internal/
 
+tmp
+logs
 results
 models
 wandb

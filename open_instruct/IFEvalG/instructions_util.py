@@ -14,12 +14,65 @@
 
 """Utility library of instructions."""
 
+import contextlib
 import functools
+import os
 import random
 import re
 
 import immutabledict
 import nltk
+
+from open_instruct import logger_utils
+
+logger = logger_utils.setup_logger(__name__)
+
+
+def _setup_nltk_data_path():
+    """Prepend NLTK_DATA and fallback dirs to nltk.data.path so workers find data."""
+    candidates = []
+    if os.environ.get("NLTK_DATA"):
+        candidates.append(os.environ["NLTK_DATA"])
+    # Fallbacks for container/Ray workers where NLTK_DATA may not be set
+    for fallback in ("/stage/.cache/nltk_data", os.path.join(os.getcwd(), ".cache", "nltk_data")):
+        if os.path.isdir(fallback) and fallback not in candidates:
+            candidates.append(fallback)
+    for path in candidates:
+        if path not in nltk.data.path:
+            nltk.data.path.insert(0, path)
+        if path == os.environ.get("NLTK_DATA"):
+            with contextlib.suppress(OSError):
+                os.makedirs(path, exist_ok=True)
+
+
+def _ensure_nltk_tokenizer_data():
+    """Ensure NLTK tokenizer data (punkt_tab, punkt) is available for word_tokenize/sent_tokenize."""
+    _setup_nltk_data_path()
+    download_dir = os.environ.get("NLTK_DATA") or (
+        "/stage/.cache/nltk_data" if os.path.isdir("/stage/.cache/nltk_data") else None
+    )
+    for resource in ("punkt_tab", "punkt"):
+        try:
+            if resource == "punkt_tab":
+                nltk.data.find(f"tokenizers/{resource}/english")
+            else:
+                nltk.data.find(f"tokenizers/{resource}/english.pickle")
+        except LookupError:
+            try:
+                kwargs = {"quiet": True}
+                if download_dir:
+                    kwargs["download_dir"] = download_dir
+                nltk.download(resource, **kwargs)
+            except Exception as e:
+                logger.warning(
+                    "NLTK download of %s failed: %s. Set NLTK_DATA to a writable dir and ensure network access.",
+                    resource,
+                    e,
+                )
+                raise
+
+
+_ensure_nltk_tokenizer_data()
 
 WORD_LIST = [
     "western",
