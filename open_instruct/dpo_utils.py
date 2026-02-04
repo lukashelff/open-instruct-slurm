@@ -491,6 +491,7 @@ def build_reference_logprobs_cache(
     model_dims: utils.ModelDims,
     use_lora: bool = False,
     disable_adapter_context: Callable[[], contextlib.AbstractContextManager] | None = None,
+    overwrite_cache: bool = False,
 ) -> model_utils.TensorCache:
     """Build a TensorCache with reference logprobs by computing logprobs once for all samples.
 
@@ -505,11 +506,12 @@ def build_reference_logprobs_cache(
         is_main_process: Whether this is the main process.
         use_lora: Whether LoRA is enabled (requires disable_adapter_context).
         disable_adapter_context: Callable returning context manager to disable LoRA adapter.
+        overwrite_cache: Whether to overwrite existing cache.
 
     Returns:
         TensorCache containing 'chosen_logps' and 'rejected_logps' tensors.
     """
-    if cache_path.exists():
+    if cache_path.exists() and not overwrite_cache:
         logger.info(f"Loading reference logprobs cache from {cache_path}")
         return model_utils.TensorCache.from_disk(cache_path, device=device)
 

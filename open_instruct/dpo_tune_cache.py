@@ -544,6 +544,7 @@ def main(args: dpo_utils.ExperimentConfig, tc: TokenizerConfig):
             model_dims=model_dims,
             use_lora=args.use_lora,
             disable_adapter_context=None,
+            overwrite_cache=args.overwrite_cache,
         )
         logger.info("=============after cache logprobs")
         print_gpu_stats(init_gpu_memory)

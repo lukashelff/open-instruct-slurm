@@ -441,6 +441,7 @@ def main(args: dpo_utils.ExperimentConfig, tc: dataset_transformation.TokenizerC
         model_dims=utils.ModelDims.from_hf_config(args.model_name_or_path),
         use_lora=False,
         disable_adapter_context=None,
+        overwrite_cache=args.overwrite_cache,
     )
 
     model_is_sharded = False
