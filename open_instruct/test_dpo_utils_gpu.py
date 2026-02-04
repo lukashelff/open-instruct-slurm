@@ -399,5 +399,84 @@ class TestPackedVsBatchedForward(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(torch.cuda.is_available(), "CUDA not available")
+class TestConcatenatedVsSeparateForwardHF(unittest.TestCase):
+    """Test that concatenated_forward and separate_forward produce identical logps with HF models.
+
+    concatenated_forward pads both sequences to max(chosen_len, rejected_len) and runs one
+    forward pass with batch_size=2. separate_forward runs two forward passes, each at the
+    sequence's own length. With correct attention masking, these should produce identical logps.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.model_name = "HuggingFaceTB/SmolLM2-135M-Instruct"
+        cls.tokenizer = AutoTokenizer.from_pretrained(cls.model_name)
+        cls.tokenizer.pad_token = cls.tokenizer.eos_token
+        cls.model = AutoModelForCausalLM.from_pretrained(cls.model_name, torch_dtype=torch.bfloat16).cuda()
+
+    def _make_batch_with_lengths(self, prefix_len: int, chosen_response_len: int, rejected_response_len: int):
+        vocab_size = self.tokenizer.vocab_size
+        shared_prefix = torch.randint(1, vocab_size, (1, prefix_len)).cuda()
+        chosen_response = torch.randint(1, vocab_size, (1, chosen_response_len)).cuda()
+        rejected_response = torch.randint(1, vocab_size, (1, rejected_response_len)).cuda()
+
+        chosen_ids = torch.cat([shared_prefix, chosen_response], dim=1)
+        rejected_ids = torch.cat([shared_prefix, rejected_response], dim=1)
+
+        chosen_labels = torch.cat([torch.full((1, prefix_len), -100, device="cuda"), chosen_response], dim=1)
+        rejected_labels = torch.cat([torch.full((1, prefix_len), -100, device="cuda"), rejected_response], dim=1)
+
+        return {
+            "chosen_input_ids": chosen_ids,
+            "chosen_labels": chosen_labels,
+            "chosen_attention_mask": torch.ones_like(chosen_ids),
+            "rejected_input_ids": rejected_ids,
+            "rejected_labels": rejected_labels,
+            "rejected_attention_mask": torch.ones_like(rejected_ids),
+        }
+
+    def test_same_lengths(self):
+        """Both sequences have the same length, so no padding difference."""
+        torch.manual_seed(42)
+        batch = self._make_batch_with_lengths(prefix_len=50, chosen_response_len=20, rejected_response_len=20)
+
+        with torch.no_grad():
+            concat_chosen, concat_rejected, _ = dpo_utils.concatenated_forward(self.model, batch)
+            sep_chosen, sep_rejected, _ = dpo_utils.separate_forward(self.model, batch)
+
+        self.assertTrue(
+            torch.allclose(concat_chosen, sep_chosen, atol=1e-4),
+            f"Chosen logps differ: concat={concat_chosen.tolist()}, sep={sep_chosen.tolist()}",
+        )
+        self.assertTrue(
+            torch.allclose(concat_rejected, sep_rejected, atol=1e-4),
+            f"Rejected logps differ: concat={concat_rejected.tolist()}, sep={sep_rejected.tolist()}",
+        )
+
+    def test_different_lengths(self):
+        """Chosen is longer than rejected; rejected gets padded in concatenated_forward."""
+        torch.manual_seed(42)
+        batch = self._make_batch_with_lengths(prefix_len=50, chosen_response_len=70, rejected_response_len=30)
+
+        with torch.no_grad():
+            concat_chosen, concat_rejected, _ = dpo_utils.concatenated_forward(self.model, batch)
+            sep_chosen, sep_rejected, _ = dpo_utils.separate_forward(self.model, batch)
+
+        logger.info(f"concat_chosen={concat_chosen.tolist()}, sep_chosen={sep_chosen.tolist()}")
+        logger.info(f"concat_rejected={concat_rejected.tolist()}, sep_rejected={sep_rejected.tolist()}")
+        logger.info(f"chosen_diff={(concat_chosen - sep_chosen).abs().item()}")
+        logger.info(f"rejected_diff={(concat_rejected - sep_rejected).abs().item()}")
+
+        self.assertTrue(
+            torch.allclose(concat_chosen, sep_chosen, atol=1e-4),
+            f"Chosen logps differ: concat={concat_chosen.tolist()}, sep={sep_chosen.tolist()}",
+        )
+        self.assertTrue(
+            torch.allclose(concat_rejected, sep_rejected, atol=1e-4),
+            f"Rejected logps differ: concat={concat_rejected.tolist()}, sep={sep_rejected.tolist()}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
