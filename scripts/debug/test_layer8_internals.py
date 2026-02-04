@@ -69,20 +69,24 @@ def main():
     olmo_rope = olmo_model.blocks["0"].attention.rope
     logger.info(f"OLMo-core RoPE type: {type(olmo_rope).__name__}")
     logger.info(f"OLMo-core full_precision: {olmo_rope.full_precision}")
-    olmo_cos = olmo_rope.cos_cached[:, :20, :]
-    olmo_sin = olmo_rope.sin_cached[:, :20, :]
-    logger.info(f"OLMo cos_cached shape: {olmo_cos.shape}, dtype: {olmo_cos.dtype}")
-    logger.info(f"OLMo sin_cached shape: {olmo_sin.shape}, dtype: {olmo_sin.dtype}")
+    olmo_sin_full, olmo_cos_full = olmo_rope._get_rotary_embedding(20, device)
+    olmo_cos = olmo_cos_full[:20, :]
+    olmo_sin = olmo_sin_full[:20, :]
+    logger.info(f"OLMo cos shape: {olmo_cos.shape}, dtype: {olmo_cos.dtype}")
+    logger.info(f"OLMo sin shape: {olmo_sin.shape}, dtype: {olmo_sin.dtype}")
 
-    cos_diff = (hf_cos.float() - olmo_cos.float()).abs()
-    sin_diff = (hf_sin.float() - olmo_sin.float()).abs()
+    hf_cos_squeezed = hf_cos.squeeze(0)
+    hf_sin_squeezed = hf_sin.squeeze(0)
+    cos_diff = (hf_cos_squeezed.float() - olmo_cos.float()).abs()
+    sin_diff = (hf_sin_squeezed.float() - olmo_sin.float()).abs()
     logger.info(f"cos diff: max={cos_diff.max().item():.6e} mean={cos_diff.mean().item():.6e}")
     logger.info(f"sin diff: max={sin_diff.max().item():.6e} mean={sin_diff.mean().item():.6e}")
 
     for block_key in ["0", "7", "8", "15"]:
         block_rope = olmo_model.blocks[block_key].attention.rope
-        same_cos = torch.equal(block_rope.cos_cached, olmo_rope.cos_cached)
-        same_sin = torch.equal(block_rope.sin_cached, olmo_rope.sin_cached)
+        block_sin, block_cos = block_rope._get_rotary_embedding(20, device)
+        same_cos = torch.equal(block_cos, olmo_cos_full)
+        same_sin = torch.equal(block_sin, olmo_sin_full)
         logger.info(f"Block {block_key} RoPE same as block 0: cos={same_cos} sin={same_sin}")
 
     logger.info("\n=== PART 2: Attention mask check ===")
@@ -252,7 +256,7 @@ def main():
     report_diff("manual_q_after_norm", hf_q_out, olmo_q_out)
 
     hf_k_out = hf_layer8.self_attn.k_norm(hf_layer8.self_attn.k_proj(layer8_input))
-    olmo_k_out = olmo_block8.attention.q_norm(olmo_block8.attention.w_k(layer8_input))
+    olmo_k_out = olmo_block8.attention.k_norm(olmo_block8.attention.w_k(layer8_input))
     report_diff("manual_k_after_norm", hf_k_out, olmo_k_out)
 
     hf_v_out = hf_layer8.self_attn.v_proj(layer8_input)
