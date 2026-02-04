@@ -222,6 +222,21 @@ class DPOTrainModule(TrainModule):
 
                 loss.backward()
 
+        if not dry_run and self._batch_counter < 3:
+            grad_norms = {}
+            total_norm_sq = 0.0
+            for name, param in self.model.named_parameters():
+                if param.grad is not None:
+                    g = param.grad.detach().float()
+                    norm = g.norm().item()
+                    total_norm_sq += norm**2
+                    grad_norms[name] = norm
+            total_norm = total_norm_sq**0.5
+            logger.info(f"DEBUG [dpo.py] batch={self._batch_counter} total_grad_norm={total_norm:.8e}")
+            sorted_norms = sorted(grad_norms.items(), key=lambda x: x[1], reverse=True)
+            for name, norm in sorted_norms[:10]:
+                logger.info(f"DEBUG [dpo.py] batch={self._batch_counter} grad {name}: norm={norm:.8e}")
+
         if not dry_run:
             self._batch_counter += 1
 

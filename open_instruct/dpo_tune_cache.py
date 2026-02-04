@@ -603,6 +603,20 @@ def main(args: dpo_utils.ExperimentConfig, tc: TokenizerConfig):
                     weighted_aux_loss = args.load_balancing_weight * aux_loss
                     loss += weighted_aux_loss
                 accelerator.backward(loss)
+                if epoch == 1 and batch_idx < 3:
+                    grad_norms = {}
+                    total_norm_sq = 0.0
+                    for name, param in model.named_parameters():
+                        if param.grad is not None:
+                            g = param.grad.detach().float()
+                            norm = g.norm().item()
+                            total_norm_sq += norm**2
+                            grad_norms[name] = norm
+                    total_norm = total_norm_sq**0.5
+                    logger.info(f"DEBUG [dpo_tune_cache.py] batch={batch_idx} total_grad_norm={total_norm:.8e}")
+                    sorted_norms = sorted(grad_norms.items(), key=lambda x: x[1], reverse=True)
+                    for name, norm in sorted_norms[:10]:
+                        logger.info(f"DEBUG [dpo_tune_cache.py] batch={batch_idx} grad {name}: norm={norm:.8e}")
                 # clip gradient norm. don't do this with deepspeed
                 if accelerator.sync_gradients and args.max_grad_norm > 0:
                     accelerator.clip_grad_norm_(model.parameters(), args.max_grad_norm)
