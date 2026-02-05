@@ -33,4 +33,5 @@ uv run python mason.py \
     --push_to_hub false \
     --try_launch_beaker_eval_jobs false \
     --with_tracking \
+    --no_concatenated_forward \
     --overwrite_cache
