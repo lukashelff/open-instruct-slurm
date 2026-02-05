@@ -56,6 +56,7 @@ APPTAINER_ENV=(
   --bind "$BASE_DIR:/stage"
   --env "UV_CACHE_DIR=/stage/.cache/uv"
   --env "HF_HOME=/stage/.cache/huggingface"
+  --env "VIRTUAL_ENV=.venv"
   --env "TMPDIR=/tmp/ray_run"
   --env "NLTK_DATA=/stage/.cache/nltk_data"
   --env "HOSTED_VLLM_API_BASE=http://ceres-cs-aus-447.reviz.ai2.in:8001/v1"
@@ -66,6 +67,8 @@ APPTAINER_ENV=(
   --env "HEAD_NODE=$HEAD_NODE"
   --env "RAY_ADDRESS=$RAY_ADDRESS"
   --env "RAY_PORT=$RAY_PORT"
+  --env "RAY_DEDUP_LOGS=0"
+  --env "LITELLM_DEBUG=1"
 )
 
 # --- 5. One srun, 2 tasks: head runs Ray head + grpo_fast.py; worker runs Ray worker then monitors until head is gone ---
@@ -106,7 +109,7 @@ GRPO_ARGS="--exp_name pipelinerl_7b_olmo3_thinker_test2_2node \
   --vllm_sync_backend nccl \
   --lr_scheduler_type constant \
   --apply_verifiable_reward true \
-  --llm_judge_model hosted_vllm/Qwen/Qwen3-4B-Instruct-2507 \
+  --llm_judge_model hosted_vllm/Qwen/Qwen3-32B \
   --llm_judge_timeout 600 \
   --llm_judge_max_tokens 2048 \
   --llm_judge_max_context_length 8192 \
@@ -127,19 +130,20 @@ GRPO_ARGS="--exp_name pipelinerl_7b_olmo3_thinker_test2_2node \
   --truncated_importance_sampling_ratio_cap 2.0 \
   --push_to_hub false"
 
+# Container inherits SLURM_PROCID from each srun task (do not pass it from script or both tasks get empty and run head).
 srun --nodes=2 --ntasks=2 apptainer exec --nv "${APPTAINER_ENV[@]}" "$CONTAINER_IMAGE" \
   bash -c '
     mkdir -p /tmp/ray_run && cd /stage
-    if [ "$(hostname)" = "$HEAD_NODE" ]; then
+    if [ "${SLURM_PROCID:-0}" = "0" ]; then
       echo "Head: starting Ray head then grpo_fast.py"
       uv run ray start --head --port=$RAY_PORT --dashboard-host=0.0.0.0
-      sleep 15
+      sleep 20
       uv run python -c "import nltk; nltk.download(\"punkt_tab\", quiet=True); nltk.download(\"punkt\", quiet=True)"
       uv run python open_instruct/grpo_fast.py '"$GRPO_ARGS"' || true
       uv run ray stop --force 2>/dev/null || true
     else
       echo "Worker: starting Ray worker then monitoring head"
-      sleep 10
+      sleep 15
       uv run ray start --address=$RAY_ADDRESS --dashboard-host=0.0.0.0
       while uv run ray status --address=$RAY_ADDRESS >/dev/null 2>&1; do sleep 5; done
       uv run ray stop --force 2>/dev/null || true

@@ -89,7 +89,7 @@ def check_context_window_limit(
     """
     try:
         # First try to load the actual model tokenizer from HuggingFace
-        tokenizer = AutoTokenizer.from_pretrained(model_name.replace("hosted_vllm/", ""))
+        tokenizer = AutoTokenizer.from_pretrained(model_name.replace("hosted_vllm/", ""), local_files_only=True)
         max_context_length = tokenizer.model_max_length if max_context_length is None else max_context_length
 
         # Count tokens in all messages using HuggingFace tokenizer

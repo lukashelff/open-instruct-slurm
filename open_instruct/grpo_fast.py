@@ -255,6 +255,11 @@ class PolicyTrainerRayProcess(RayProcess):
             use_cache=False,
             **({"device_map": {"": self.local_rank}} if args.deepspeed_stage != 3 else {}),
         )
+        # Avoid "generation flags are not valid" warning: hub config may set temperature/top_p
+        # without do_sample; OLMo-3 uses our config with temperature=None, top_p=None.
+        # model_name = (getattr(self.policy.config, "_name_or_path", "") or "").lower()
+        # if "olmo-3" in model_name or "olmo_3" in model_name:
+        #     self.policy.generation_config = get_olmo3_generation_config(tokenizer)
         disable_dropout_in_model(self.policy)
         self.policy.gradient_checkpointing_enable()
         if args.set_weight_decay_on_bias_and_norm:

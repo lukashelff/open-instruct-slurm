@@ -1,8 +1,8 @@
 #!/bin/bash
-# OLMo-3 7B Think RL (GRPO) - Slurm 2-node run.
+# OLMo-3 7B Think RL (GRPO) - Slurm 5-node run: 1 node for gradient updates (Ray head + policy trainers), 4 nodes for inference (vLLM).
 # grpo_fast.py supports multi-node when the Ray cluster is already running (see configs/beaker_configs/ray_node_setup.sh).
-# This script uses one srun with 2 tasks: head task starts Ray head then runs grpo_fast.py; worker task starts Ray worker then monitors until head is gone.
-#SBATCH --job-name=olmo-GRPO-Training
+# Task 0 = head (Ray head + grpo_fast.py + 8 policy trainers); tasks 1–4 = Ray workers (32 vLLM engines across 4 nodes).
+#SBATCH --job-name=RLVR-olmo3-test
 #SBATCH --partition=all
 #SBATCH --nodes=5
 #SBATCH --gpus-per-node=8
@@ -23,7 +23,7 @@ RAY_PORT=6379
 
 # --- 2. Slurm env (for logging) ---
 echo "=========================================="
-echo "SLR 2-node Job Started"
+echo "SLR 5-node Job Started (1 train + 4 inference)"
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node: $SLURM_NODELIST"
 echo "Start Time: $(date)"
@@ -56,7 +56,8 @@ APPTAINER_ENV=(
   --bind "$BASE_DIR:/stage"
   --env "UV_CACHE_DIR=/stage/.cache/uv"
   --env "HF_HOME=/stage/.cache/huggingface"
-  --env "TMPDIR=/tmp/ray_run"
+  --env "VIRTUAL_ENV=.venv"
+  --env "TMPDIR=/tmp"
   --env "NLTK_DATA=/stage/.cache/nltk_data"
   --env "HOSTED_VLLM_API_BASE=http://ceres-cs-aus-447.reviz.ai2.in:8001/v1"
   --env "HOSTED_VLLM_API_KEY=${HOSTED_VLLM_API_KEY:-EMPTY}"
@@ -66,10 +67,12 @@ APPTAINER_ENV=(
   --env "HEAD_NODE=$HEAD_NODE"
   --env "RAY_ADDRESS=$RAY_ADDRESS"
   --env "RAY_PORT=$RAY_PORT"
+  --env "RAY_DEDUP_LOGS=0"
+  --env "LITELLM_DEBUG=1"
 )
 
-# --- 5. One srun, 2 tasks: head runs Ray head + grpo_fast.py; worker runs Ray worker then monitors until head is gone ---
-GRPO_ARGS="--exp_name pipelinerl_7b_olmo3_thinker_test2_2node \
+# --- 5. One srun, N tasks: task 0 = head (Ray + grpo_fast.py), others = workers. Use SLURM_PROCID (hostname can differ in container). ---
+GRPO_ARGS="--exp_name olmo3_7b_thinker \
   --queue_dashboard_port 8765 \
   --beta 0.0 \
   --num_samples_per_prompt_rollout 8 \
@@ -86,7 +89,7 @@ GRPO_ARGS="--exp_name pipelinerl_7b_olmo3_thinker_test2_2node \
   --dataset_mixer_list_splits train \
   --dataset_mixer_eval_list allenai/Dolci-Think-RL-7B 8 \
   --dataset_mixer_eval_list_splits train \
-  --max_prompt_token_length 10240 \
+  --max_prompt_token_length 2048 \
   --response_length 32768 \
   --pack_length 35840 \
   --model_name_or_path allenai/Olmo-3-7B-Think-DPO \
@@ -96,19 +99,19 @@ GRPO_ARGS="--exp_name pipelinerl_7b_olmo3_thinker_test2_2node \
   --temperature 1.0 \
   --ground_truths_key ground_truth \
   --sft_messages_key prompt \
-  --total_episodes 10000000 \
+  --total_episodes 1024 \
   --deepspeed_stage 3 \
   --num_learners_per_node 8 \
   --vllm_num_engines 32 \
   --vllm_tensor_parallel_size 1 \
-  # --vllm_gpu_memory_utilization 0.35 \
-  # --vllm_enforce_eager \
-  # --vllm_sync_backend nccl \
+  --vllm_gpu_memory_utilization 0.8 \
+  --vllm_enforce_eager \
+  --vllm_sync_backend nccl \
   --lr_scheduler_type constant \
   --apply_verifiable_reward true \
-  --llm_judge_model hosted_vllm/Qwen/Qwen3-4B-Instruct-2507 \
+  --llm_judge_model hosted_vllm/Qwen/Qwen3-32B \
   --llm_judge_timeout 600 \
-  --llm_judge_max_tokens 2048 \
+  --llm_judge_max_tokens 1048 \
   --llm_judge_max_context_length 32768 \
   --clip_higher 0.272 \
   --code_api_url https://p9f1719l7f.execute-api.us-west-2.amazonaws.com/prod/test_program \
@@ -120,6 +123,7 @@ GRPO_ARGS="--exp_name pipelinerl_7b_olmo3_thinker_test2_2node \
   --gradient_checkpointing \
   --with_tracking \
   --checkpoint_state_freq 100 \
+  --checkpoint_state_dir /stage/checkpoints \
   --backend_timeout 1200 \
   --inflight_updates true \
   --async_steps 8 \
@@ -127,19 +131,21 @@ GRPO_ARGS="--exp_name pipelinerl_7b_olmo3_thinker_test2_2node \
   --truncated_importance_sampling_ratio_cap 2.0 \
   --push_to_hub false"
 
-srun --nodes=2 --ntasks=2 apptainer exec --nv "${APPTAINER_ENV[@]}" "$CONTAINER_IMAGE" \
+# Do not pass SLURM_PROCID=... (script's value is unset; each srun task has its own in the environment). Container inherits it.
+srun --nodes=5 --ntasks=5 apptainer exec --nv "${APPTAINER_ENV[@]}" "$CONTAINER_IMAGE" \
   bash -c '
-    mkdir -p /tmp/ray_run && cd /stage
-    if [ "$(hostname)" = "$HEAD_NODE" ]; then
-      echo "Head: starting Ray head then grpo_fast.py"
+    cd /stage
+    # Use SLURM_PROCID to pick head (task 0 = head); hostname can differ inside container
+    if [ "${SLURM_PROCID:-0}" = "0" ]; then
+      echo "Head: starting Ray head then grpo_fast.py (1 node = gradient updates)"
       uv run ray start --head --port=$RAY_PORT --dashboard-host=0.0.0.0
-      sleep 15
+      sleep 25
       uv run python -c "import nltk; nltk.download(\"punkt_tab\", quiet=True); nltk.download(\"punkt\", quiet=True)"
       uv run python open_instruct/grpo_fast.py '"$GRPO_ARGS"' || true
       uv run ray stop --force 2>/dev/null || true
     else
-      echo "Worker: starting Ray worker then monitoring head"
-      sleep 10
+      echo "Worker: starting Ray worker (inference node)"
+      sleep $((15 + SLURM_PROCID * 2))
       uv run ray start --address=$RAY_ADDRESS --dashboard-host=0.0.0.0
       while uv run ray status --address=$RAY_ADDRESS >/dev/null 2>&1; do sleep 5; done
       uv run ray stop --force 2>/dev/null || true

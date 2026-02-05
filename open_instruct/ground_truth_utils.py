@@ -22,6 +22,7 @@ from typing import Any
 
 import numpy as np
 import requests
+import litellm
 from litellm import acompletion
 
 from open_instruct import context_window_checker, logger_utils
@@ -40,12 +41,16 @@ from open_instruct.utils import extract_final_answer
 
 logger = logger_utils.setup_logger(__name__)
 
-# remove excessive logging from liteLLM
+# remove excessive logging from liteLLM (used for the LLM judge only, not for vLLM policy actors)
 logging.getLogger("LiteLLM").setLevel(logging.WARNING)
 logging.getLogger("litellm").setLevel(logging.ERROR)
 logging.getLogger("litellm.cost_calculator").setLevel(logging.CRITICAL)
 logging.getLogger("litellm._client").setLevel(logging.CRITICAL)
 logging.getLogger("cost_calculator").setLevel(logging.WARNING)
+# Optional: set LITELLM_DEBUG=1 to turn on litellm debug (e.g. to debug judge errors).
+# Warning: debug mode may log API keys; use only in safe environments.
+if os.environ.get("LITELLM_DEBUG", "").strip() in ("1", "true", "True", "yes"):
+    litellm._turn_on_debug()
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
