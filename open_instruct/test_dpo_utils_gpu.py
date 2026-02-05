@@ -415,6 +415,23 @@ class TestConcatenatedVsSeparateForwardHF(unittest.TestCase):
         cls.tokenizer = AutoTokenizer.from_pretrained(cls.model_name)
         cls.tokenizer.pad_token = cls.tokenizer.eos_token
         cls.model = AutoModelForCausalLM.from_pretrained(cls.model_name, torch_dtype=torch.bfloat16).cuda()
+        cls.model.train()
+        for module in cls.model.modules():
+            if isinstance(module, (torch.nn.Dropout, torch.nn.Dropout2d, torch.nn.Dropout3d, torch.nn.AlphaDropout)):
+                module.p = 0.0
+
+    @staticmethod
+    def _snapshot_rng_state() -> dict[str, object]:
+        state: dict[str, object] = {"cpu": torch.get_rng_state()}
+        if torch.cuda.is_available():
+            state["cuda"] = torch.cuda.get_rng_state_all()
+        return state
+
+    @staticmethod
+    def _restore_rng_state(state: dict[str, object]) -> None:
+        torch.set_rng_state(state["cpu"])  # type: ignore[arg-type]
+        if "cuda" in state:
+            torch.cuda.set_rng_state_all(state["cuda"])  # type: ignore[arg-type]
 
     def _make_batch_with_lengths(self, prefix_len: int, chosen_response_len: int, rejected_response_len: int):
         vocab_size = self.tokenizer.vocab_size
@@ -443,7 +460,9 @@ class TestConcatenatedVsSeparateForwardHF(unittest.TestCase):
         batch = self._make_batch_with_lengths(prefix_len=50, chosen_response_len=20, rejected_response_len=20)
 
         with torch.no_grad():
+            rng_state = self._snapshot_rng_state()
             concat_chosen, concat_rejected, _ = dpo_utils.concatenated_forward(self.model, batch)
+            self._restore_rng_state(rng_state)
             sep_chosen, sep_rejected, _ = dpo_utils.separate_forward(self.model, batch)
 
         self.assertTrue(
@@ -461,7 +480,9 @@ class TestConcatenatedVsSeparateForwardHF(unittest.TestCase):
         batch = self._make_batch_with_lengths(prefix_len=50, chosen_response_len=70, rejected_response_len=30)
 
         with torch.no_grad():
+            rng_state = self._snapshot_rng_state()
             concat_chosen, concat_rejected, _ = dpo_utils.concatenated_forward(self.model, batch)
+            self._restore_rng_state(rng_state)
             sep_chosen, sep_rejected, _ = dpo_utils.separate_forward(self.model, batch)
 
         logger.info(f"concat_chosen={concat_chosen.tolist()}, sep_chosen={sep_chosen.tolist()}")
@@ -627,13 +648,14 @@ class TestOlmoCoreVsHFGradientDivergence(unittest.TestCase):
 @unittest.skipUnless(torch.cuda.is_available(), "CUDA not available")
 @unittest.skipUnless(has_flash_attn_2(), "Flash attention required")
 class TestFlashAttnVarlenVsStandardGradients(unittest.TestCase):
-    """Verify hypothesis 2: flash_attn_func and flash_attn_varlen_func differ in backward pass.
+    """Disproved hypothesis 2: flash_attn_func and flash_attn_varlen_func produce identical gradients.
 
-    These are different CUDA kernels. Even for identical inputs and forward outputs,
-    the backward pass may tile and accumulate differently, producing different gradients.
+    Originally we hypothesized that different CUDA kernels would produce different backward
+    gradients. Testing showed the gradients are exactly identical (diff=0.0), so the flash
+    attention API difference is NOT a source of divergence between OLMo-core and HF.
     """
 
-    def test_single_sequence_gradients(self):
+    def test_single_sequence_gradients_identical(self):
         import flash_attn  # noqa: PLC0415
 
         torch.manual_seed(42)
@@ -663,19 +685,12 @@ class TestFlashAttnVarlenVsStandardGradients(unittest.TestCase):
         max_grad_diff = max(q_grad_diff, k_grad_diff, v_grad_diff)
 
         logger.info(f"Single-seq forward max diff: {forward_diff}")
-        logger.info(f"Single-seq Q grad max diff: {q_grad_diff}")
-        logger.info(f"Single-seq K grad max diff: {k_grad_diff}")
-        logger.info(f"Single-seq V grad max diff: {v_grad_diff}")
         logger.info(f"Single-seq max gradient diff: {max_grad_diff}")
 
-        self.assertGreater(
-            max_grad_diff,
-            0.0,
-            "Expected gradient differences between flash_attn_func and flash_attn_varlen_func. "
-            "If this fails, hypothesis 2 (different FA kernels cause gradient divergence) is wrong.",
-        )
+        self.assertEqual(forward_diff, 0.0, "Forward outputs should be exactly identical")
+        self.assertEqual(max_grad_diff, 0.0, "Gradients should be exactly identical")
 
-    def test_multiple_sequences_gradients(self):
+    def test_multiple_sequences_gradients_identical(self):
         import flash_attn  # noqa: PLC0415
 
         torch.manual_seed(42)
@@ -705,17 +720,10 @@ class TestFlashAttnVarlenVsStandardGradients(unittest.TestCase):
         max_grad_diff = max(q_grad_diff, k_grad_diff, v_grad_diff)
 
         logger.info(f"Multi-seq forward max diff: {forward_diff}")
-        logger.info(f"Multi-seq Q grad max diff: {q_grad_diff}")
-        logger.info(f"Multi-seq K grad max diff: {k_grad_diff}")
-        logger.info(f"Multi-seq V grad max diff: {v_grad_diff}")
         logger.info(f"Multi-seq max gradient diff: {max_grad_diff}")
 
-        self.assertGreater(
-            max_grad_diff,
-            0.0,
-            "Expected gradient differences between flash_attn_func and flash_attn_varlen_func "
-            "for multiple sequences. If this fails, hypothesis 2 is wrong.",
-        )
+        self.assertEqual(forward_diff, 0.0, "Forward outputs should be exactly identical")
+        self.assertEqual(max_grad_diff, 0.0, "Gradients should be exactly identical")
 
 
 if __name__ == "__main__":
