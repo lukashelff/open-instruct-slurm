@@ -748,23 +748,26 @@ class TestRoPEPatchEffect(unittest.TestCase):
         unpatched_logps_diff = (hf_chosen - unpatched_chosen).abs().item()
         patched_logps_diff = (hf_chosen - patched_chosen).abs().item()
 
-        logger.info(f"HF grad norm: {hf_grad_norm:.6f}")
-        logger.info(f"Unpatched OLMo grad norm: {unpatched_grad_norm:.6f} (diff from HF: {unpatched_grad_diff:.6f})")
-        logger.info(f"Patched OLMo grad norm: {patched_grad_norm:.6f} (diff from HF: {patched_grad_diff:.6f})")
-        logger.info(f"Unpatched logps diff from HF: {unpatched_logps_diff:.6f}")
-        logger.info(f"Patched logps diff from HF: {patched_logps_diff:.6f}")
+        print("\n=== RoPE Patch Effect Results ===")
+        print(f"HF grad norm: {hf_grad_norm:.6f}")
+        print(f"Unpatched OLMo grad norm: {unpatched_grad_norm:.6f} (diff from HF: {unpatched_grad_diff:.6f})")
+        print(f"Patched OLMo grad norm: {patched_grad_norm:.6f} (diff from HF: {patched_grad_diff:.6f})")
+        print(f"Unpatched logps diff from HF: {unpatched_logps_diff:.6f}")
+        print(f"Patched logps diff from HF: {patched_logps_diff:.6f}")
 
         if patched_grad_diff < unpatched_grad_diff:
-            logger.info("RoPE patch REDUCES gradient divergence")
             improvement = (unpatched_grad_diff - patched_grad_diff) / unpatched_grad_diff * 100
-            logger.info(f"Improvement: {improvement:.1f}%")
+            print(f"RESULT: RoPE patch REDUCES gradient divergence by {improvement:.1f}%")
         else:
-            logger.info("RoPE patch does NOT reduce gradient divergence")
+            print("RESULT: RoPE patch does NOT reduce gradient divergence")
+        print("=================================\n")
 
         self.assertGreater(
             unpatched_grad_diff + patched_grad_diff,
             0.0,
-            "Expected some gradient divergence between OLMo-core and HF (even if RoPE patch helps)",
+            f"Expected gradient divergence. HF={hf_grad_norm:.6f}, "
+            f"Unpatched={unpatched_grad_norm:.6f} (diff={unpatched_grad_diff:.6f}), "
+            f"Patched={patched_grad_norm:.6f} (diff={patched_grad_diff:.6f})",
         )
 
 
