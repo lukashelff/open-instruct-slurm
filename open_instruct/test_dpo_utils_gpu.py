@@ -846,7 +846,7 @@ class TestAttentionLayerEquivalence(unittest.TestCase):
 
         hooks.append(self.olmo_model.embeddings.register_forward_hook(self._make_output_hook(olmo_acts, "embed")))
         for i in range(2):
-            block = self.olmo_model.blocks[i]
+            block = self.olmo_model.blocks[str(i)]
             hooks.append(block.attention.register_forward_hook(self._make_output_hook(olmo_acts, f"L{i}_attn")))
             hooks.append(
                 block.attention_norm.register_forward_hook(self._make_output_hook(olmo_acts, f"L{i}_attn_norm"))
@@ -930,7 +930,7 @@ class TestAttentionLayerEquivalence(unittest.TestCase):
 
         olmo_module_grads = {}
         for i in range(2):
-            block = self.olmo_model.blocks[i]
+            block = self.olmo_model.blocks[str(i)]
             for name, submod in [
                 ("attn_q", block.attention.w_q),
                 ("attn_k", block.attention.w_k),
