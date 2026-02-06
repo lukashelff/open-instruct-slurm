@@ -17,7 +17,7 @@ from olmo_core.nn.hf import convert as olmo_hf_convert
 from olmo_core.nn.transformer import TransformerConfig
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
-from open_instruct import dpo_utils, logger_utils, model_utils, olmo_core_utils
+from open_instruct import dpo_utils, hf_matched_olmo, logger_utils, model_utils, olmo_core_utils
 
 logger = logger_utils.setup_logger(__name__)
 
@@ -969,6 +969,58 @@ class TestAttentionLayerEquivalence(unittest.TestCase):
         total_olmo = sum(olmo_module_grads.values())
         self.assertNotAlmostEqual(
             total_hf, total_olmo, places=2, msg="Expected gradient norms to differ between OLMo-core and HF"
+        )
+
+    def test_hf_matched_model_exact_match(self):
+        hf_config = AutoConfig.from_pretrained("allenai/OLMo-2-0425-1B")
+        hf_config.num_hidden_layers = 2
+        hf_config._attn_implementation = "flash_attention_2"
+
+        matched_model = hf_matched_olmo.HFMatchedOlmo2.from_hf_config(hf_config).to(torch.bfloat16).cuda()
+        hf_state = self.hf_model.state_dict()
+        converted = hf_matched_olmo.HFMatchedOlmo2.convert_hf_state_dict(hf_state)
+        result = matched_model.load_state_dict(converted, strict=False)
+        self.assertEqual(len(result.missing_keys), 0, f"Missing keys: {result.missing_keys}")
+
+        torch.manual_seed(42)
+        input_ids = torch.randint(1, self.vocab_size, (1, 70)).cuda()
+
+        with torch.no_grad():
+            hf_logits = self.hf_model(input_ids=input_ids, use_cache=False).logits
+            matched_logits = matched_model(input_ids)
+
+        max_diff = (hf_logits.float() - matched_logits.float()).abs().max().item()
+        logger.info(f"HF vs HFMatched logits max_diff: {max_diff}")
+        self.assertEqual(max_diff, 0.0, f"Expected bit-for-bit identical logits, got max_diff={max_diff}")
+
+        labels = input_ids.clone()
+        labels[:, :35] = -100
+
+        self.hf_model.zero_grad()
+        hf_out = self.hf_model(input_ids=input_ids, use_cache=False)
+        hf_logps = dpo_utils._get_batch_logps(hf_out.logits, labels)
+        hf_logps.sum().backward()
+        hf_grad_norm = (
+            sum(p.grad.float().norm().item() ** 2 for p in self.hf_model.parameters() if p.grad is not None) ** 0.5
+        )
+
+        matched_model.zero_grad()
+        matched_logits_train = matched_model(input_ids)
+        matched_logps = dpo_utils._get_batch_logps(matched_logits_train, labels)
+        matched_logps.sum().backward()
+        matched_grad_norm = (
+            sum(p.grad.float().norm().item() ** 2 for p in matched_model.parameters() if p.grad is not None) ** 0.5
+        )
+
+        grad_diff = abs(hf_grad_norm - matched_grad_norm)
+        logger.info(
+            f"HF grad norm: {hf_grad_norm:.6f}, HFMatched grad norm: {matched_grad_norm:.6f}, diff: {grad_diff:.6f}"
+        )
+        self.assertAlmostEqual(
+            hf_grad_norm,
+            matched_grad_norm,
+            places=4,
+            msg=f"Gradient norms should match: HF={hf_grad_norm}, Matched={matched_grad_norm}",
         )
 
 
