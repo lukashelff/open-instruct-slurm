@@ -1400,6 +1400,31 @@ def rlvr_tokenize_v2(
     return row
 
 
+def slr_bench_prepare_v1(row: dict[str, Any], tokenizer: PreTrainedTokenizer,**kwargs: Any) -> dict[str, Any]:
+    """
+    Convert AIML-TUDA/SLR-Bench raw columns to RLVR format (messages, ground_truth, dataset).
+
+    No-op for rows that already have "messages" (e.g. when mixing with other datasets).
+    """
+    if DEFAULT_SFT_MESSAGES_KEY in row:
+        return row
+    prompt = row.get("prompt")
+    validation_program = row.get("validation program") or row.get("validation_program")
+    if prompt is None or validation_program is None:
+        return row
+    row[GROUND_TRUTHS_KEY] = {
+        "validation_program": validation_program,
+        "evaluation_config": {
+            "positive_predicate": "eastbound",
+            "negative_predicate": "westbound",
+        },
+    }
+    row[VERIFIER_SOURCE_KEY] = "slr_bench"
+    row[INPUT_IDS_PROMPT_KEY] = tokenizer.apply_chat_template(prompt, add_generation_prompt=True)
+    row[RAW_PROMPT_KEY] = prompt
+    return row
+
+
 def rlvr_tokenize_v3(
     row: dict[str, Any],
     tokenizer: PreTrainedTokenizer,
@@ -1500,6 +1525,7 @@ TRANSFORM_FNS = {
     "preference_filter_v1": (preference_filter_v1, "filter"),
     "preference_tulu_tokenize_and_truncate_v1": (preference_tulu_tokenize_and_truncate_v1_2, "map"),
     "preference_tulu_filter_v1": (preference_tulu_filter_v1, "filter"),
+    "slr_bench_prepare_v1": (slr_bench_prepare_v1, "map"),
     "rlvr_tokenize_v1": (rlvr_tokenize_v3, "map"),
     "rlvr_max_length_filter_v1": (rlvr_max_length_filter_v2, "filter"),
 }
@@ -1578,16 +1604,30 @@ class DatasetConfig:
                 "parquet", data_files=self.dataset_name, split=self.dataset_split, num_proc=max_num_processes()
             )
         else:
+            # Support dataset name with config, e.g. "AIML-TUDA/SLR-Bench:v1-All"
+            name_for_load = self.dataset_name
+            hf_config = None
+            if ":" in name_for_load:
+                name_for_load, hf_config = name_for_load.split(":", 1)
             # commit hash only works for hf datasets
             self.dataset_commit_hash = get_commit_hash(
-                self.dataset_name, self.dataset_revision, "README.md", "dataset"
+                name_for_load, self.dataset_revision, "README.md", "dataset"
             )
-            dataset = load_dataset(
-                self.dataset_name,
-                split=self.dataset_split,
-                revision=self.dataset_revision,
-                num_proc=max_num_processes(),
-            )
+            if hf_config:
+                dataset = load_dataset(
+                    name_for_load,
+                    hf_config,
+                    split=self.dataset_split,
+                    revision=self.dataset_revision,
+                    num_proc=max_num_processes(),
+                )
+            else:
+                dataset = load_dataset(
+                    name_for_load,
+                    split=self.dataset_split,
+                    revision=self.dataset_revision,
+                    num_proc=max_num_processes(),
+                )
         assert isinstance(dataset, Dataset), f"Expected Dataset, got {type(dataset)}"
         self.dataset = dataset
         if self.dataset_range is None:

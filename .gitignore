@@ -19,6 +19,7 @@ results
 models
 wandb
 data/*
+checkpoints
 # !data/processed
 output/
 configs/beaker_configs/auto_created
@@ -162,3 +163,4 @@ dmypy.json
 cache/
 local_dataset_cache/
 scratch/
+pyproject.toml

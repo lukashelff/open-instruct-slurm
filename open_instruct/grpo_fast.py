@@ -255,11 +255,6 @@ class PolicyTrainerRayProcess(RayProcess):
             use_cache=False,
             **({"device_map": {"": self.local_rank}} if args.deepspeed_stage != 3 else {}),
         )
-        # Avoid "generation flags are not valid" warning: hub config may set temperature/top_p
-        # without do_sample; OLMo-3 uses our config with temperature=None, top_p=None.
-        # model_name = (getattr(self.policy.config, "_name_or_path", "") or "").lower()
-        # if "olmo-3" in model_name or "olmo_3" in model_name:
-        #     self.policy.generation_config = get_olmo3_generation_config(tokenizer)
         disable_dropout_in_model(self.policy)
         self.policy.gradient_checkpointing_enable()
         if args.set_weight_decay_on_bias_and_norm:
@@ -1202,6 +1197,7 @@ def setup_datasets(
         logger.info(f"System prompt overriden to:\n#####\n{system_prompt_override}\n#####\n")
 
     transform_fn_args = [
+        {},
         {
             "system_prompt_override": system_prompt_override,
             "tool_definitions": tool_definitions,
@@ -2128,7 +2124,14 @@ def main(
     # so placement groups can use STRICT_SPREAD across nodes. Otherwise start a local cluster.
     ray_init_kwargs: dict = {
         "dashboard_host": "0.0.0.0",
-        "runtime_env": {"excludes": [".git/"], "env_vars": dict(os.environ)},
+        "runtime_env": {
+            "excludes": [
+                ".git/",
+                "checkpoints/",
+                "output/",
+            ],
+            "env_vars": dict(os.environ),
+        },
     }
     if os.environ.get("RAY_ADDRESS"):
         ray_init_kwargs["address"] = "auto"

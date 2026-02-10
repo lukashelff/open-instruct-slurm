@@ -937,6 +937,101 @@ class CodeVerifier(VerifierFunction):
         return CodeVerifierConfig
 
 
+class SLRBenchVerifier(VerifierFunction):
+    """
+    Verifier for SLR-Bench (Scalable Logical Reasoning) tasks.
+
+    Uses the Hugging Face evaluate metric AIML-TUDA/VerifiableRewardsForScalableLogicalReasoning
+    to check if the model's predicted Prolog rule is correct against the validation program.
+    Requires the `evaluate` library and SWI-Prolog installed on the system.
+
+    Label format: dict with "validation_program" (str) and "evaluation_config" (dict with
+    "positive_predicate" and "negative_predicate", e.g. "eastbound" / "westbound").
+    """
+
+    def __init__(self, verifier_config: VerifierConfig | None = None) -> None:
+        super().__init__("slr_bench", verifier_config=verifier_config, weight=1.0)
+        self._metric = None  # loaded lazily on first __call__ to avoid polluting sys.modules before Ray actors are created
+
+    def _get_metric(self):
+        """Lazy-load the evaluate metric on first use (not in __init__).
+
+        evaluate.load() registers dynamic 'evaluate_modules' in sys.modules.
+        If that happens before Ray creates LLMRayActors, Ray serialization fails
+        on workers with 'No module named evaluate_modules'.
+        """
+        if self._metric is None:
+            from evaluate import load  # noqa: PLC0415
+
+            root_dir = os.path.dirname(os.path.abspath(__file__))
+            judge_path = os.path.join(root_dir, "slr", "PrivateVerifier.py")
+            # public_judge_path = os.path.join(root_dir, "slr", "PublicVerifier.py")
+            self._metric = load(judge_path)
+        return self._metric
+
+    @staticmethod
+    def _extract_prolog_rule(prediction: str) -> str:
+        """Extract the Prolog rule from model output (after optional thinking block)."""
+        cleaned = remove_thinking_section(prediction)
+        if not cleaned.strip():
+            return prediction.strip()
+        return cleaned.strip()
+
+    def __call__(self, tokenized_prediction: list[int], prediction: str, label: Any, query: str | None = None) -> VerificationResult:
+        """
+        Label comes from: dataset row key GROUND_TRUTHS_KEY (see dataset_transformation).
+        For SLR-Bench it is set by slr_bench_prepare_v1; rlvr_tokenize_v3 wraps it in a list.
+        apply_verifiable_reward (this module) zips ground_truth_list with dataset_list and
+        passes each element as label=gt. So label is expected to be a single dict with
+        "validation_program" (str) and "evaluation_config" (dict with positive_predicate, negative_predicate).
+        """
+        if not prediction:
+            return VerificationResult(score=0.0)
+        # ref = label
+        # if ref is None:
+        #     raise ValueError(
+        #         "SLRBenchVerifier received label=None. Check dataset has ground_truth set "
+        #         "(e.g. slr_bench_prepare_v1 + rlvr_tokenize_v3) and row has GROUND_TRUTHS_KEY."
+        #     )
+        # if isinstance(ref, list):
+        #     ref = ref[0] if ref else None
+        #     if ref is None:
+        #         raise ValueError(
+        #             "SLRBenchVerifier received label=[] (empty list). "
+        #             "Expected list of one dict with validation_program and evaluation_config."
+        #         )
+        # if not isinstance(ref, dict):
+        #     raise ValueError(
+        #         "SLRBenchVerifier expected label to be a dict (or list of one dict). "
+        #         f"Got type={type(ref).__name__}, repr={repr(ref)[:500]}."
+        #     )
+        # validation_program = ref.get("validation_program") or ref.get("validation program")
+        # if not validation_program:
+        #     raise ValueError(
+        #         "SLRBenchVerifier label must contain 'validation_program' or 'validation program'. "
+        #         f"Keys present: {list(ref.keys())}, repr={repr(ref)[:500]}."
+        #     )
+        # eval_config = ref.get("evaluation_config")
+        # if eval_config is not None and not isinstance(eval_config, dict):
+        #     raise ValueError(
+        #         "SLRBenchVerifier label['evaluation_config'] must be a dict or omitted. "
+        #         f"Got type={type(eval_config).__name__}."
+        #     )
+        # eval_config = eval_config or {}
+        # label_dict = {"validation_program": validation_program, "evaluation_config": eval_config}
+        rule = self._extract_prolog_rule(prediction)
+        metric = self._get_metric()
+        result = metric.compute(predictions=[rule], references=[label])
+        if result is None:
+            raise ValueError("SLRBenchVerifier: metric.compute() returned None.")
+        score = float(result.get("accuracy", result.get("partial_score", 0.0)))
+        return VerificationResult(score=min(1.0, max(0.0, score)))
+
+    @classmethod
+    def get_config_class(cls) -> type:
+        return VerifierConfig
+
+
 def build_all_verifiers(args, streaming_config=None) -> dict[str, VerifierFunction]:
     """
     Build all verifiers with the given configs.
@@ -966,6 +1061,11 @@ def build_all_verifiers(args, streaming_config=None) -> dict[str, VerifierFuncti
             instance = CodeVerifier(stdio_config)
             instance.name = "code_stdio"
             verifiers["code_stdio"] = instance
+        
+        if subclass == SLRBenchVerifier:
+            instance = SLRBenchVerifier(verifier_config)
+            instance.name = "slr_bench"
+            verifiers["slr_bench"] = instance
 
     for judge_type in JUDGE_PROMPT_MAP:
         instance = LMJudgeVerifier(judge_type, LMJudgeVerifierConfig.from_args(args, streaming_config))
