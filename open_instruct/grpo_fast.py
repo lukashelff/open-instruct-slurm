@@ -85,7 +85,7 @@ from open_instruct.dataset_transformation import (
     INPUT_IDS_PROMPT_KEY,
     TOOLS_COLUMN_KEY,
     TokenizerConfig,
-    get_cached_dataset_tulu,
+    get_cached_dataset_tulu_with_statistics,
     validate_dataset_tools,
     visualize_token,
 )
@@ -1158,6 +1158,33 @@ def setup_experiment_tracking(args: grpo_utils.ExperimentConfig, tc: TokenizerCo
     return beaker_config, wandb_url
 
 
+def _log_dataset_filter_stats(
+    split_name: str, statistics: dict[str, Any], max_prompt_token_length: int | None
+) -> None:
+    """Log per-dataset filter stats (e.g. how many prompts were dropped by max_prompt_token_length)."""
+    stats_list = statistics.get("per_dataset_stats") or []
+    if not stats_list:
+        return
+    logger.info(
+        "[%s dataset] Filter stats (prompts exceeding max_prompt_token_length=%s are dropped, not truncated):",
+        split_name,
+        max_prompt_token_length,
+    )
+    for s in stats_list:
+        initial = s.get("initial_instances", 0)
+        final = s.get("final_instances", 0)
+        filtered = s.get("instances_filtered", initial - final)
+        pct = (100.0 * filtered / initial) if initial else 0
+        logger.info(
+            "  %s: initial=%s, final=%s, filtered=%s (%.1f%%)",
+            s.get("dataset_name", "?"),
+            initial,
+            final,
+            filtered,
+            pct,
+        )
+
+
 def _validate_and_log_dataset_tools(dataset, configured_tool_names: list[str] | None, dataset_name: str) -> None:
     """Validate and log per-sample tool configuration for a dataset."""
     if dataset and TOOLS_COLUMN_KEY in dataset.column_names and configured_tool_names:
@@ -1207,7 +1234,7 @@ def setup_datasets(
         },
         {"max_prompt_token_length": streaming_config.max_prompt_token_length},
     ]
-    train_dataset = get_cached_dataset_tulu(
+    train_dataset, train_dataset_stats = get_cached_dataset_tulu_with_statistics(
         dataset_mixer_list=streaming_config.dataset_mixer_list,
         dataset_mixer_list_splits=streaming_config.dataset_mixer_list_splits,
         tc=tc,
@@ -1220,12 +1247,13 @@ def setup_datasets(
         dataset_skip_cache=streaming_config.dataset_skip_cache,
         system_prompt_override=system_prompt_override,
     )
+    _log_dataset_filter_stats("train", train_dataset_stats, streaming_config.max_prompt_token_length)
 
     _validate_and_log_dataset_tools(train_dataset, configured_tool_call_names, "train_dataset")
     train_dataset = train_dataset.shuffle(seed=args.seed)
 
     if len(streaming_config.dataset_mixer_eval_list) > 0:
-        eval_dataset = get_cached_dataset_tulu(
+        eval_dataset, eval_dataset_stats = get_cached_dataset_tulu_with_statistics(
             dataset_mixer_list=streaming_config.dataset_mixer_eval_list,
             dataset_mixer_list_splits=streaming_config.dataset_mixer_eval_list_splits,
             tc=tc,
@@ -1238,6 +1266,7 @@ def setup_datasets(
             dataset_skip_cache=streaming_config.dataset_skip_cache,
             system_prompt_override=system_prompt_override,
         )
+        _log_dataset_filter_stats("eval", eval_dataset_stats, streaming_config.max_prompt_token_length)
 
         _validate_and_log_dataset_tools(eval_dataset, configured_tool_call_names, "eval_dataset")
         if streaming_config.shuffle_eval_dataset:

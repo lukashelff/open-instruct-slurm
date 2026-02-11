@@ -2,9 +2,9 @@
 # OLMo-3 7B Think RL (GRPO) - Slurm 5-node run: 1 node for gradient updates (Ray head + policy trainers), 4 nodes for inference (vLLM).
 # grpo_fast.py supports multi-node when the Ray cluster is already running (see configs/beaker_configs/ray_node_setup.sh).
 # Task 0 = head (Ray head + grpo_fast.py + 8 policy trainers); tasks 1–4 = Ray workers (32 vLLM engines across 4 nodes).
-#SBATCH --job-name=RLVR-soofi
+#SBATCH --job-name=RLVR-soofi-slr
 #SBATCH --partition=all
-#SBATCH --nodes=5
+#SBATCH --nodes=6
 #SBATCH --gpus-per-node=8
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=64
@@ -14,12 +14,13 @@
 #SBATCH --error=logs/%x_%j.err
 #SBATCH --qos=normal
 #SBATCH --open-mode=append
-JOB_NAME="RLVR-soofi"
+#SBATCH --exclude=cn13,cn06
+JOB_NAME="RLVR-soofi-slr"
 
 
 # --- 1. Variables & Paths ---
 BASE_DIR="/mnt/vast/home/lh22zyta/shortcut-RL/open-instruct"
-CONTAINER_IMAGE="docker://helffml/open_instruct_dev"
+CONTAINER_IMAGE="docker://helffml/open_instruct_dev:slr"
 OUTPUT_DIR="$BASE_DIR/output/$JOB_NAME"
 RAY_PORT=6379
 
@@ -51,6 +52,7 @@ export VLLM_ALLOW_INSECURE_SERIALIZATION=1
 export VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
 export NCCL_DEBUG=ERROR
 export TRITON_CACHE_DIR="/tmp/triton"
+export SLR_VERIFIER_DISABLE_TQDM=1
 
 mkdir -p "$BASE_DIR/logs" "$BASE_DIR/.cache/triton" "$BASE_DIR/.cache/nltk_data" "$BASE_DIR/.cache/open_instruct_dataset_cache" "$OUTPUT_DIR" "$OUTPUT_DIR/rollouts"
 
@@ -72,6 +74,7 @@ APPTAINER_ENV=(
 )
 
 # --- 5. One srun, N tasks: task 0 = head (Ray + grpo_fast.py), others = workers. Use SLURM_PROCID (hostname can differ in container). ---
+# Per step: num_unique_prompts_rollout (64) prompts × num_samples_per_prompt_rollout (8) = 512 generations. For long response_length use smaller values (e.g. 32 and 4) so each step finishes in reasonable time.
 GRPO_ARGS="--exp_name $JOB_NAME \
   --queue_dashboard_port 8765 \
   --beta 0.0 \
@@ -85,12 +88,12 @@ GRPO_ARGS="--exp_name $JOB_NAME \
   --rollouts_save_path $OUTPUT_DIR/rollouts \
   --dataset_local_cache_dir /stage/.cache/open_instruct_dataset_cache \
   --kl_estimator 2 \
-  --dataset_mixer_list allenai/Dolci-Think-RL-7B 1.0 \
+  --dataset_mixer_list AIML-TUDA/SLR-Bench:v1-Basic 1.0 AIML-TUDA/SLR-Bench:v1-Easy 1.0 AIML-TUDA/SLR-Bench:v1-Medium 1.0 \
   --dataset_mixer_list_splits train \
-  --dataset_mixer_eval_list allenai/Dolci-Think-RL-7B 8 \
-  --dataset_mixer_eval_list_splits train \
-  --max_prompt_token_length 2048 \
-  --response_length 32768 \
+  --dataset_mixer_eval_list AIML-TUDA/SLR-Bench:v1-Easy 8 \
+  --dataset_mixer_eval_list_splits validation \
+  --max_prompt_token_length 4048 \
+  --response_length 30000 \
   --pack_length 35840 \
   --model_name_or_path allenai/Olmo-3-7B-Think-DPO \
   --chat_template_name olmo_thinker \
@@ -102,9 +105,9 @@ GRPO_ARGS="--exp_name $JOB_NAME \
   --total_episodes 10000000 \
   --deepspeed_stage 3 \
   --num_learners_per_node 8 \
-  --vllm_num_engines 32 \
+  --vllm_num_engines 48 \
   --vllm_tensor_parallel_size 1 \
-  --vllm_gpu_memory_utilization 0.85 \
+  --vllm_gpu_memory_utilization 0.80 \
   --vllm_sync_backend nccl \
   --lr_scheduler_type constant \
   --apply_verifiable_reward true \
@@ -132,7 +135,7 @@ GRPO_ARGS="--exp_name $JOB_NAME \
   --oe_eval_tasks mmlu:cot::hamish_zs_reasoning_deepseek,popqa::hamish_zs_reasoning_deepseek,simpleqa::tulu-thinker_deepseek,bbh:cot::hamish_zs_reasoning_deepseek_v2,gpqa:0shot_cot::hamish_zs_reasoning_deepseek,zebralogic::hamish_zs_reasoning_deepseek,agi_eval_english:0shot_cot::hamish_zs_reasoning_deepseek,minerva_math::hamish_zs_reasoning_deepseek,minerva_math_500::hamish_zs_reasoning_deepseek,gsm8k::zs_cot_latex_deepseek,omega_500:0-shot-chat_deepseek,aime:zs_cot_r1::pass_at_32_2024_deepseek,aime:zs_cot_r1::pass_at_32_2025_deepseek,codex_humanevalplus:0-shot-chat::tulu-thinker_deepseek,mbppplus:0-shot-chat::tulu-thinker_deepseek,livecodebench_codegeneration::tulu-thinker_deepseek,alpaca_eval_v3::hamish_zs_reasoning_deepseek,ifeval::hamish_zs_reasoning_deepseek"
 
 # Do not pass SLURM_PROCID=... (script's value is unset; each srun task has its own in the environment). Container inherits it.
-srun --nodes=5 --ntasks=5 apptainer exec --nv "${APPTAINER_ENV[@]}" "$CONTAINER_IMAGE" \
+srun --nodes=6 --ntasks=6 apptainer exec --nv "${APPTAINER_ENV[@]}" "$CONTAINER_IMAGE" \
   bash -c '
     cd /stage
     mkdir -p /tmp/triton

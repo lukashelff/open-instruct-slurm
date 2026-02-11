@@ -987,44 +987,61 @@ class SLRBenchVerifier(VerifierFunction):
         """
         if not prediction:
             return VerificationResult(score=0.0)
-        # ref = label
-        # if ref is None:
-        #     raise ValueError(
-        #         "SLRBenchVerifier received label=None. Check dataset has ground_truth set "
-        #         "(e.g. slr_bench_prepare_v1 + rlvr_tokenize_v3) and row has GROUND_TRUTHS_KEY."
-        #     )
-        # if isinstance(ref, list):
-        #     ref = ref[0] if ref else None
-        #     if ref is None:
-        #         raise ValueError(
-        #             "SLRBenchVerifier received label=[] (empty list). "
-        #             "Expected list of one dict with validation_program and evaluation_config."
-        #         )
-        # if not isinstance(ref, dict):
-        #     raise ValueError(
-        #         "SLRBenchVerifier expected label to be a dict (or list of one dict). "
-        #         f"Got type={type(ref).__name__}, repr={repr(ref)[:500]}."
-        #     )
-        # validation_program = ref.get("validation_program") or ref.get("validation program")
-        # if not validation_program:
-        #     raise ValueError(
-        #         "SLRBenchVerifier label must contain 'validation_program' or 'validation program'. "
-        #         f"Keys present: {list(ref.keys())}, repr={repr(ref)[:500]}."
-        #     )
-        # eval_config = ref.get("evaluation_config")
-        # if eval_config is not None and not isinstance(eval_config, dict):
-        #     raise ValueError(
-        #         "SLRBenchVerifier label['evaluation_config'] must be a dict or omitted. "
-        #         f"Got type={type(eval_config).__name__}."
-        #     )
-        # eval_config = eval_config or {}
-        # label_dict = {"validation_program": validation_program, "evaluation_config": eval_config}
+        ref = label
+        if ref is None:
+            logger.warning(
+                "SLRBenchVerifier received label=None. Check dataset has ground_truth set "
+                "(e.g. slr_bench_prepare_v1 + rlvr_tokenize_v3) and row has GROUND_TRUTHS_KEY."
+            )
+            return VerificationResult(score=0.0)
+        if isinstance(ref, list):
+            ref = ref[0] if ref else None
+            if ref is None:
+                logger.warning(
+                    "SLRBenchVerifier received label=[] (empty list). "
+                    "Expected list of one dict with validation_program and evaluation_config."
+                )
+                return VerificationResult(score=0.0)
+        if not isinstance(ref, dict):
+            logger.warning(
+                "SLRBenchVerifier expected label to be a dict (or list of one dict). "
+                "Got type=%s, repr=%s.",
+                type(ref).__name__,
+                repr(ref)[:500],
+            )
+            return VerificationResult(score=0.0)
+        validation_program = ref.get("validation_program") or ref.get("validation program")
+        if not validation_program:
+            logger.warning(
+                "SLRBenchVerifier label must contain 'validation_program' or 'validation program'. "
+                "Keys present: %s.",
+                list(ref.keys()),
+            )
+            return VerificationResult(score=0.0)
+        eval_config = ref.get("evaluation_config")
+        if eval_config is not None and not isinstance(eval_config, dict):
+            logger.warning(
+                "SLRBenchVerifier label['evaluation_config'] must be a dict or omitted. Got type=%s.",
+                type(eval_config).__name__,
+            )
+            return VerificationResult(score=0.0)
         rule = self._extract_prolog_rule(prediction)
-        metric = self._get_metric()
-        result = metric.compute(predictions=[rule], references=[label])
+        try:
+            metric = self._get_metric()
+            # Use _compute directly to avoid evaluate Module.add_batch path where
+            # selected_feature_format can be None for locally loaded metrics (TypeError).
+            result = metric._compute(predictions=[rule], references=[ref])
+        except Exception as e:
+            logger.warning("SLRBenchVerifier metric failed: %s", e, exc_info=True)
+            return VerificationResult(score=0.0)
         if result is None:
-            raise ValueError("SLRBenchVerifier: metric.compute() returned None.")
-        score = float(result.get("accuracy", result.get("partial_score", 0.0)))
+            logger.warning("SLRBenchVerifier: metric._compute() returned None.")
+            return VerificationResult(score=0.0)
+        try:
+            score = float(result.get("accuracy", result.get("partial_score", 0.0)))
+        except (TypeError, ValueError) as e:
+            logger.warning("SLRBenchVerifier could not read score from result %s: %s", result, e)
+            return VerificationResult(score=0.0)
         return VerificationResult(score=min(1.0, max(0.0, score)))
 
     @classmethod

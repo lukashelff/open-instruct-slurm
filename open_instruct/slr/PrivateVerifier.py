@@ -26,6 +26,9 @@ import re
 
 logger = logging.getLogger(__name__)
 
+# Set SLR_VERIFIER_DISABLE_TQDM=1 (or true/yes) to disable progress bars in _compute
+_DISABLE_TQDM = os.environ.get("SLR_VERIFIER_DISABLE_TQDM", "").lower() in ("1", "true", "yes")
+
 _CITATION = """\
 @misc{helff2025slrautomatedsynthesisframework,
       title={SLR: An Automated Synthesis Framework for Scalable Logical Reasoning}, 
@@ -332,12 +335,15 @@ class VerifiableRewardsForScalableLogicalReasoning(evaluate.Metric):
                 results = list(tqdm(
                     pool.starmap(_evaluate_with_prolog, eval_inputs),
                     total=len(eval_inputs),
-                    desc=f"Evaluating rules (parallel processing with {num_cpus} CPUs)"
+                    desc=f"Evaluating rules (parallel processing with {num_cpus} CPUs)",
+                    disable=_DISABLE_TQDM,
                 ))
         else:
             # Evaluate in the main thread (no multiprocessing)
             results = []
-            for prediction, validation_program, eval_config, t in tqdm(eval_inputs, total=len(predictions), desc="Evaluating rules"):
+            for prediction, validation_program, eval_config, t in tqdm(
+                eval_inputs, total=len(predictions), desc="Evaluating rules", disable=_DISABLE_TQDM
+            ):
                 results.append(_evaluate_with_prolog(prediction, validation_program, eval_config, timeout=t))
 
         # Calculate metrics
