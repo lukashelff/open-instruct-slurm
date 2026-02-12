@@ -31,8 +31,6 @@ LLM_JUDGE_NUM_ENGINES=8
 # Code verification API (CPU-only, no GPUs): runs model-generated Python in subprocesses against test cases for code datasets.
 # Set CODE_API_URL="" to disable. Unset = start local server on head (uvicorn). Or set to any http(s) URL to use that endpoint.
 CODE_API_PORT=1234
-CODE_API_URL="${CODE_API_URL:-http://127.0.0.1:${CODE_API_PORT}/test_program}"
-
 
 # --- 2. Slurm env (for logging) ---
 echo "=========================================="
@@ -47,7 +45,6 @@ LLM_JUDGE_NODE=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | sed -n '1p')
 HEAD_NODE=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | sed -n '2p')
 LLM_JUDGE_IP=$(srun --nodes=1 --ntasks=1 -w "$LLM_JUDGE_NODE" hostname --ip-address)
 HEAD_IP=$(srun --nodes=1 --ntasks=1 -w "$HEAD_NODE" hostname --ip-address)
-export CODE_API_URL="http://${LLM_JUDGE_IP}:${CODE_API_PORT}/test_program"
 echo "Ray head: $HEAD_NODE ($HEAD_IP:$RAY_PORT)"
 echo "Judge server: $LLM_JUDGE_NODE ($LLM_JUDGE_IP:$LLM_JUDGE_PORT) --> HOSTED_VLLM_API_BASE=$HOSTED_VLLM_API_BASE"
 echo "Code API: $CODE_API_URL"
@@ -70,9 +67,10 @@ export TRITON_CACHE_DIR="/tmp/triton"
 export SLR_VERIFIER_DISABLE_TQDM=1
 export RAY_ADDRESS="${HEAD_IP}:${RAY_PORT}"
 export HOSTED_VLLM_API_BASE="http://${LLM_JUDGE_IP}:${LLM_JUDGE_PORT}/v1"
+export CODE_API_URL="http://${LLM_JUDGE_IP}:${CODE_API_PORT}/test_program"
 
 
-mkdir -p "$BASE_DIR/logs" "$BASE_DIR/.cache/triton" "$BASE_DIR/.cache/nltk_data" "$BASE_DIR/.cache/open_instruct_dataset_cache" "$OUTPUT_DIR" "$OUTPUT_DIR/rollouts"
+mkdir -p "$BASE_DIR/logs" "$BASE_DIR/.cache/nltk_data" "$BASE_DIR/.cache/open_instruct_dataset_cache" "$OUTPUT_DIR" "$OUTPUT_DIR/rollouts"
 
 APPTAINER_ENV=(
   --bind "$BASE_DIR:/stage"

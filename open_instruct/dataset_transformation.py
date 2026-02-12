@@ -55,7 +55,7 @@ from typing import Any, Literal
 import numpy as np
 import torch
 import transformers
-from datasets import Dataset, concatenate_datasets, load_dataset
+from datasets import Dataset, concatenate_datasets, load_dataset, Value
 from huggingface_hub import ModelCard, revision_exists
 from rich.console import Console
 from rich.text import Text
@@ -1412,13 +1412,15 @@ def slr_bench_prepare_v1(row: dict[str, Any], tokenizer: PreTrainedTokenizer, **
     validation_program = row.get("validation program") or row.get("validation_program")
     if prompt is None or validation_program is None:
         return row
-    row[GROUND_TRUTHS_KEY] = {
+    validation_program_dict = {
         "validation_program": validation_program,
         "evaluation_config": {"positive_predicate": "eastbound", "negative_predicate": "westbound"},
     }
+    row[GROUND_TRUTHS_KEY] = json.dumps(validation_program_dict)
     row[VERIFIER_SOURCE_KEY] = "slr_bench"
     row[INPUT_IDS_PROMPT_KEY] = tokenizer.apply_chat_template(prompt, add_generation_prompt=True)
     row[RAW_PROMPT_KEY] = prompt
+    row["id"] = str(row["id"]) + "_slr_bench"
     return row
 
 
@@ -1733,62 +1735,12 @@ def get_dataset_v1(dc: DatasetConfig, tc: TokenizerConfig):
             f" All rows may be filtered out by length or the split may be empty.{hint}"
         )
 
+    # set dataset column 'id' to Value("null")
+    if "id" in dataset.column_names:
+        dataset = dataset.cast_column("id", Value("string"))
+
     # Cast int id to string so this dataset can be concatenated with others that use string id
     return dataset
-
-
-# def _cast_dataset_id_to_string_if_int(dataset: Dataset) -> Dataset:
-#     """Cast id column to string so dataset can be concatenated with others that use string id."""
-#     if "id" not in dataset.column_names:
-#         return dataset
-#     feat = dataset.features.get("id")
-#     dtype = getattr(feat, "dtype", None) or getattr(feat, "_dtype", None)
-#     feat_str = str(feat).lower()
-#     # Cast when id is not string/null (e.g. int64) so concatenate_datasets can align features
-#     is_string_or_null = dtype in ("string", "null") or "string" in feat_str or "null" in feat_str
-#     if not is_string_or_null:
-#         dataset = dataset.map(lambda x: {"id": [str(v) for v in x["id"]]}, batched=True, num_proc=1)
-#         # Force schema to string; map() can leave features as int64 in some datasets versions
-#         dataset = dataset.cast_column("id", Value("string"))
-#     return dataset
-
-
-# def _cast_dataset_ground_truth_to_string_list(dataset: Dataset) -> Dataset:
-#     """Cast ground_truth column to List(Value('string')) so concatenate_datasets can align features.
-
-#     When a dataset has ground_truth as list of dicts (e.g. SLR-Bench), serialize each element
-#     to JSON string so it can be concatenated with datasets that use list of strings.
-#     Downstream (apply_verifiable_reward) parses JSON strings back to dicts when needed.
-#     """
-#     if GROUND_TRUTHS_KEY not in dataset.column_names:
-#         return dataset
-#     feat = dataset.features.get(GROUND_TRUTHS_KEY)
-#     if feat is None:
-#         return dataset
-#     feat_str = str(feat)
-#     # Already list of strings; no change
-#     if "List(Value('string'))" in feat_str or "Sequence(Value('string'))" in feat_str:
-#         return dataset
-
-#     def _elem_to_string(e: Any) -> str:
-#         if isinstance(e, dict):
-#             return json.dumps(e)
-#         if isinstance(e, str):
-#             return e
-#         return str(e)
-
-#     def _row_ground_truth_string_list(batch: dict) -> dict:
-#         out = []
-#         for row_gt in batch[GROUND_TRUTHS_KEY]:
-#             if isinstance(row_gt, list):
-#                 out.append([_elem_to_string(x) for x in row_gt])
-#             else:
-#                 out.append([_elem_to_string(row_gt)])
-#         return {GROUND_TRUTHS_KEY: out}
-
-#     dataset = dataset.map(_row_ground_truth_string_list, batched=True, num_proc=1)
-#     dataset = dataset.cast_column(GROUND_TRUTHS_KEY, Sequence(Value("string")))
-#     return dataset
 
 
 def _get_serializable_dataset_config_dict(dc: DatasetConfig, exclude_none: bool = False) -> dict:

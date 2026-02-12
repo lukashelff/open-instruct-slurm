@@ -2,7 +2,7 @@
 # OLMo-3 7B Think RL (GRPO) - Slurm 5-node run: 1 node for gradient updates (Ray head + policy trainers), 4 nodes for inference (vLLM).
 # grpo_fast.py supports multi-node when the Ray cluster is already running (see configs/beaker_configs/ray_node_setup.sh).
 # Task 0 = head (Ray head + grpo_fast.py + 8 policy trainers); tasks 1–4 = Ray workers (32 vLLM engines across 4 nodes).
-#SBATCH --job-name=Isomorphic-RLVR-soofi
+#SBATCH --job-name=RLVR-soofi-Isomorphic-RL
 #SBATCH --partition=all
 #SBATCH --nodes=7
 #SBATCH --gpus-per-node=8
@@ -15,7 +15,7 @@
 #SBATCH --qos=normal
 #SBATCH --open-mode=append
 #SBATCH --exclude=cn13,cn06
-JOB_NAME="Isomorphic-RLVR-soofi"
+JOB_NAME="RLVR-soofi-Isomorphic-RL"
 
 
 # --- 1. Variables & Paths ---

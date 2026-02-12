@@ -993,7 +993,7 @@ class SLRBenchVerifier(VerifierFunction):
         return cleaned.strip()
 
     def __call__(
-        self, tokenized_prediction: list[int], prediction: str, label: Any, query: str | None = None
+        self, tokenized_prediction: list[int], prediction: str, label: str | dict, query: str | None = None
     ) -> VerificationResult:
         """
         Label comes from: dataset row key GROUND_TRUTHS_KEY (see dataset_transformation).
@@ -1005,40 +1005,13 @@ class SLRBenchVerifier(VerifierFunction):
         if not prediction:
             return VerificationResult(score=0.0)
         ref = label
-        if ref is None:
-            logger.warning(
-                "SLRBenchVerifier received label=None. Check dataset has ground_truth set "
-                "(e.g. slr_bench_prepare_v1 + rlvr_tokenize_v3) and row has GROUND_TRUTHS_KEY."
-            )
-            return VerificationResult(score=0.0)
-        if isinstance(ref, list):
-            ref = ref[0] if ref else None
-            if ref is None:
-                logger.warning(
-                    "SLRBenchVerifier received label=[] (empty list). "
-                    "Expected list of one dict with validation_program and evaluation_config."
-                )
-                return VerificationResult(score=0.0)
-        if not isinstance(ref, dict):
-            logger.warning(
-                "SLRBenchVerifier expected label to be a dict (or list of one dict). Got type=%s, repr=%s.",
-                type(ref).__name__,
-                repr(ref)[:500],
-            )
-            return VerificationResult(score=0.0)
-        validation_program = ref.get("validation_program") or ref.get("validation program")
-        if not validation_program:
-            logger.warning(
-                "SLRBenchVerifier label must contain 'validation_program' or 'validation program'. Keys present: %s.",
-                list(ref.keys()),
-            )
-            return VerificationResult(score=0.0)
-        eval_config = ref.get("evaluation_config")
-        if eval_config is not None and not isinstance(eval_config, dict):
-            logger.warning(
-                "SLRBenchVerifier label['evaluation_config'] must be a dict or omitted. Got type=%s.",
-                type(eval_config).__name__,
-            )
+        if isinstance(ref, str):
+            try:
+                ref = json.loads(ref)
+            except json.JSONDecodeError:
+                ref = ref
+        if not isinstance(ref, dict) or not "validation_program" in ref or not "evaluation_config" in ref:
+            logger.warning("SLRBenchVerifier expected label to be a dict with 'validation_program' and 'evaluation_config'. Got type=%s. with value %s", type(ref).__name__, ref)
             return VerificationResult(score=0.0)
         rule = self._extract_prolog_rule(prediction)
         try:
