@@ -11,18 +11,19 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" Symbolic Judge: Verifiable Rewards for Logical Reasoning at Scale """
+"""Symbolic Judge: Verifiable Rewards for Logical Reasoning at Scale"""
 
+import logging
+import multiprocessing as mp
 import os
+import re
 import subprocess
 import tempfile
-import evaluate
-import logging
-import datasets
-from tqdm import tqdm
 import time
-import multiprocessing as mp
-import re
+
+import datasets
+import evaluate
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,7 @@ Returns:
     detailed_results (`list` of `dict`): Per-example results including correctness, partial score, execution time, and any errors encountered.
 """
 
+
 def fix_validation_program(validation_program, positive_pred="eastbound", negative_pred="westbound"):
     """
     Fixes the validation program by ensuring it has a consistent format.
@@ -99,10 +101,10 @@ def fix_validation_program(validation_program, positive_pred="eastbound", negati
     - Removes empty lines
     """
     # anonymize train and car instances, and head predicates
-    validation_program = re.sub(rf'\b{positive_pred}\b', 'pos', validation_program)
-    validation_program = re.sub(rf'\b{negative_pred}\b', 'neg', validation_program)
+    validation_program = re.sub(rf"\b{positive_pred}\b", "pos", validation_program)
+    validation_program = re.sub(rf"\b{negative_pred}\b", "neg", validation_program)
     # replace train with mytrain and car with mycar
-    #trains must follow a digit pattern train\d+ and cars must follow a pattern car\d+_\d+
+    # trains must follow a digit pattern train\d+ and cars must follow a pattern car\d+_\d+
     # validation_program = validation_program.replace('(train', '(mytrain')
     # validation_program = validation_program.replace('(car', '(mycar').replace(', car', ', mycar')
     return validation_program
@@ -122,25 +124,25 @@ def _evaluate_with_prolog(prediction, validation_program, eval_config, timeout=5
     # For default judge: use extract_ilp_from_text_v2 to only allow rules (no shortcuts)
     # Since this is the local judge file, we use extract_ilp_from_text
     rule_to_evaluate = extract_ilp_from_text(prediction)
-    
+
     if positive_pred not in rule_to_evaluate:
-        p = prediction.replace('\n', ' ')
+        p = prediction.replace("\n", " ")
         return {
             "is_correct": False,
             "partial_score": 0.0,
             "syntax_valid": False,
-            "error": f"Invalid Syntax: Logic Rule not found for symbol '{positive_pred}': {p}"
+            "error": f"Invalid Syntax: Logic Rule not found for symbol '{positive_pred}': {p}",
         }
 
-    pos_examples = re.findall(rf'{positive_pred}\(([^)]+)\)', validation_program)
-    neg_examples = re.findall(rf'{negative_pred}\(([^)]+)\)', validation_program)
+    pos_examples = re.findall(rf"{positive_pred}\(([^)]+)\)", validation_program)
+    neg_examples = re.findall(rf"{negative_pred}\(([^)]+)\)", validation_program)
 
     # Determine arity by counting commas in first example plus 1
     arity = 1  # default to unary
     if pos_examples:
-        arity = pos_examples[0].count(',') + 1
+        arity = pos_examples[0].count(",") + 1
     elif neg_examples:
-        arity = neg_examples[0].count(',') + 1
+        arity = neg_examples[0].count(",") + 1
 
     # Create variables based on arity
     vars = ", ".join([f"X{i}" for i in range(1, arity + 1)])
@@ -162,31 +164,25 @@ check_all :- forall((pos({vars});neg({vars})), check({vars})).
     validation_program = fix_validation_program(validation_program, positive_pred, negative_pred)
 
     pos_negs = validation_program.count("pos(") + validation_program.count("neg(")
-    validation_program = '\n'.join(sorted(validation_program.splitlines()))
+    validation_program = "\n".join(sorted(validation_program.splitlines()))
     full_program = validation_program + "\n\n" + symbolic_judge + "\n\n" + rule_to_evaluate + "\n\n"
 
-    with tempfile.NamedTemporaryFile(suffix='.pl', mode='w', delete=False) as f:
+    with tempfile.NamedTemporaryFile(suffix=".pl", mode="w", delete=False) as f:
         f.write(full_program)
         temp_file = f.name
 
     try:
         eval_start_time = time.time()
         # Execute the Prolog program
-        cmd = ['swipl', '-s', temp_file, '-g', 'check_count(Count), writeln(Count)', '-t', 'halt']
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=timeout,
-            text=True
-        )
-        partial_score = 0.0 if result.stdout.strip() == '' else int(result.stdout.strip())
+        cmd = ["swipl", "-s", temp_file, "-g", "check_count(Count), writeln(Count)", "-t", "halt"]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, text=True)
+        partial_score = 0.0 if result.stdout.strip() == "" else int(result.stdout.strip())
         # Extract partial score from output
         partial_score = partial_score / pos_negs if pos_negs > 0 else 0.0
 
         is_correct = True if partial_score == 1.0 else False
 
-        error =  f'{result.stderr} -> Eval Rule "{rule_to_evaluate}"' if result.stderr else None
+        error = f'{result.stderr} -> Eval Rule "{rule_to_evaluate}"' if result.stderr else None
         t1 = time.time()
 
         return {
@@ -198,22 +194,31 @@ check_all :- forall((pos({vars});neg({vars})), check({vars})).
         }
 
     except subprocess.TimeoutExpired:
-        r = rule_to_evaluate.replace('\n', ' ')
-        return {"is_correct": False, "partial_score": 0.0, "syntax_valid": False,
-                "error": "Evaluation timed out after {timeout} seconds for rule: '{r}'"}
+        r = rule_to_evaluate.replace("\n", " ")
+        return {
+            "is_correct": False,
+            "partial_score": 0.0,
+            "syntax_valid": False,
+            "error": "Evaluation timed out after {timeout} seconds for rule: '{r}'",
+        }
     except Exception as e:
-        return {"is_correct": False, "partial_score": 0.0, "syntax_valid": False,
-                "error": f"Error evaluating rule '{rule_to_evaluate}' returns: '{result.stdout.strip() if result else 'No error message'}' with error: {e}"}
+        return {
+            "is_correct": False,
+            "partial_score": 0.0,
+            "syntax_valid": False,
+            "error": f"Error evaluating rule '{rule_to_evaluate}' returns: '{result.stdout.strip() if result else 'No error message'}' with error: {e}",
+        }
     finally:
         if os.path.exists(temp_file):
             os.remove(temp_file)
 
+
 def extract_ilp_from_text(text):
-    '''
+    """
     Extracts all facts and rules from the text.
     Unlike v2, this extracts ALL Prolog syntax regardless of predicate.
     This allows shortcuts like eastbound(train1). to be accepted by local judge.
-    
+
     Args:
         text (str): The text to extract the ILP from.
     Returns:
@@ -223,76 +228,76 @@ def extract_ilp_from_text(text):
         "eastbound(train0)."
         >>> extract_ilp_from_text("eastbound(T) :- has_car(T, C). eastbound(train1).")
         "eastbound(T) :- has_car(T, C).\neastbound(train1)."
-    '''
-    text = re.sub(r'%.*?(?=\n|$)', '', text) # remove comments
+    """
+    text = re.sub(r"%.*?(?=\n|$)", "", text)  # remove comments
     # Pre-process: collapse code blocks to single lines
-    text = re.sub(r'\n\s*', ' ', text)  # crude: flatten all to one line
-    
-    p_code = ''
-    
+    text = re.sub(r"\n\s*", " ", text)  # crude: flatten all to one line
+
+    p_code = ""
+
     # Pattern 1: Extract rules (with :- body)
     # Matches: predicate(args) :- body.
-    rule_pattern = r'([a-zA-Z_][a-zA-Z0-9_]*\([^)]*\)\s*:-[^.]*\.)'
+    rule_pattern = r"([a-zA-Z_][a-zA-Z0-9_]*\([^)]*\)\s*:-[^.]*\.)"
     rules = re.findall(rule_pattern, text)
     for rule in rules:
         statement = rule.strip()
-        if not statement.endswith('.'):
-            statement += '.'
-        p_code += statement + '\n'
-    
+        if not statement.endswith("."):
+            statement += "."
+        p_code += statement + "\n"
+
     # Pattern 2: Extract facts (no :- body)
     # Matches: predicate(args).
     # But exclude facts that are part of rules (already captured above)
-    fact_pattern = r'([a-zA-Z_][a-zA-Z0-9_]*\([^)]*\)\s*\.)'
+    fact_pattern = r"([a-zA-Z_][a-zA-Z0-9_]*\([^)]*\)\s*\.)"
     facts = re.findall(fact_pattern, text)
     rule_statements_set = set(rule.strip() for rule in rules)
-    
+
     for fact in facts:
         statement = fact.strip()
-        if not statement.endswith('.'):
-            statement += '.'
+        if not statement.endswith("."):
+            statement += "."
         # Only add if it's a pure fact (not part of any rule we already captured)
         # A fact is part of a rule if it appears anywhere in that rule (head or body)
         is_part_of_rule = False
-        fact_without_dot = statement.rstrip('.')
-        
+        fact_without_dot = statement.rstrip(".")
+
         for rule in rules:
             # Check if this fact appears anywhere in the rule
             # Remove spaces for comparison to handle whitespace differences
-            fact_normalized = fact_without_dot.replace(' ', '')
-            rule_normalized = rule.replace(' ', '')
-            
+            fact_normalized = fact_without_dot.replace(" ", "")
+            rule_normalized = rule.replace(" ", "")
+
             # Check if the fact (without the final dot) appears in the rule
             # This catches both head and body occurrences
             if fact_normalized in rule_normalized:
                 is_part_of_rule = True
                 break
-        
+
         # Only add standalone facts (not part of any rule)
         if not is_part_of_rule:
-            p_code += statement + '\n'
-    
+            p_code += statement + "\n"
+
     return p_code.strip()
 
 
 def extract_ilp_from_text_v2(text, target_predicate=None, allow_multiple_rules=False):
-    text = re.sub(r'%.*?(?=\n|$)', '', text) # remove comments
+    text = re.sub(r"%.*?(?=\n|$)", "", text)  # remove comments
     # Pre-process: collapse code blocks to single lines
-    text = re.sub(r'\n\s*', ' ', text)  # crude: flatten all to one line
+    text = re.sub(r"\n\s*", " ", text)  # crude: flatten all to one line
     # Rule pattern, across newlines
-    rule_pattern = re.compile(rf'({target_predicate}\([^()]*\)\s*:-.*?\.)')
+    rule_pattern = re.compile(rf"({target_predicate}\([^()]*\)\s*:-.*?\.)")
     rules = list(rule_pattern.findall(text))
     if len(rules) > 1 and not allow_multiple_rules:
         # logger.warning(f"Found multiple rules in text, but allow_multiple_rules is set to False. Using only the last match.")
         rules = rules[-1:]
     # Remove rules that are also captured as facts
-    p_code = ''
+    p_code = ""
     for rule in rules:
         # Ensure the rule ends with a period
         statement = rule.strip()
-        if not statement.endswith('.'):
-            statement += '.'
-        p_code += statement + '\n'
+        if not statement.endswith("."):
+            statement += "."
+        p_code += statement + "\n"
     return p_code.strip()  # Ensure no trailing whitespace
 
 
@@ -315,29 +320,26 @@ class PublicVerifier(evaluate.Metric):
             description=_DESCRIPTION,
             citation=_CITATION,
             inputs_description=_KWARGS_DESCRIPTION,
-            features=datasets.Features({
-                'predictions': datasets.Value('string'),
-                'references': {
-                    'validation_program': datasets.Value('string'),
-                    'evaluation_config': {
-                        'positive_predicate': datasets.Value('string'),
-                        'negative_predicate': datasets.Value('string')
-                    }
-                },
-            }),
+            features=datasets.Features(
+                {
+                    "predictions": datasets.Value("string"),
+                    "references": {
+                        "validation_program": datasets.Value("string"),
+                        "evaluation_config": {
+                            "positive_predicate": datasets.Value("string"),
+                            "negative_predicate": datasets.Value("string"),
+                        },
+                    },
+                }
+            ),
             codebase_urls=["https://github.com/AIML-TUDA/SLR-Bench"],
-            reference_urls=["https://huggingface.co/datasets/AIML-TUDA/SLR-Bench"]
+            reference_urls=["https://huggingface.co/datasets/AIML-TUDA/SLR-Bench"],
         )
 
     def _download_and_prepare(self, dl_manager):
         """Checks if SWI-Prolog is installed or warns the user."""
         try:
-            subprocess.run(
-                ["swipl", "--version"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=True
-            )
+            subprocess.run(["swipl", "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
         except (subprocess.CalledProcessError, FileNotFoundError):
             logger.warning(
                 "SWI-Prolog not found. Please install it:\n"
@@ -353,7 +355,8 @@ class PublicVerifier(evaluate.Metric):
 
         if len(predictions) != len(references):
             raise ValueError(
-                f"Number of predictions ({len(predictions)}) and references {len(references)}) don't match")
+                f"Number of predictions ({len(predictions)}) and references {len(references)}) don't match"
+            )
 
         TIMEOUT = 10 if len(predictions) > 500 else 5
         # Prepare evaluation inputs
@@ -363,10 +366,9 @@ class PublicVerifier(evaluate.Metric):
 
             # Extract configuration parameters directly from reference
             # This is the key fix: look for config values at the top level if evaluation_config doesn't exist
-            eval_config = reference.get("evaluation_config", {
-                    "positive_predicate": "eastbound",
-                    "negative_predicate": "westbound"
-                })
+            eval_config = reference.get(
+                "evaluation_config", {"positive_predicate": "eastbound", "negative_predicate": "westbound"}
+            )
 
             if not validation_program:
                 raise ValueError(f"Example {i} does not contain validation program field")
@@ -378,15 +380,20 @@ class PublicVerifier(evaluate.Metric):
             # Process evaluations in parallel
             num_cpus = max(1, mp.cpu_count() - 1)  # Leave one CPU free
             with mp.Pool(processes=num_cpus) as pool:
-                results = list(tqdm(
-                    pool.starmap(_evaluate_with_prolog, eval_inputs),
-                    total=len(eval_inputs),
-                    desc=f"Evaluating rules (parallel processing with {num_cpus} CPUs)"
-                ))
+                results = list(
+                    tqdm(
+                        pool.starmap(_evaluate_with_prolog, eval_inputs),
+                        total=len(eval_inputs),
+                        desc=f"Evaluating rules (parallel processing with {num_cpus} CPUs)",
+                        disable=True,
+                    )
+                )
         else:
             # Evaluate in the main thread (no multiprocessing)
             results = []
-            for prediction, validation_program, eval_config, t in tqdm(eval_inputs, total=len(predictions), desc="Evaluating rules"):
+            for prediction, validation_program, eval_config, t in tqdm(
+                eval_inputs, total=len(predictions), desc="Evaluating rules", disable=True
+            ):
                 results.append(_evaluate_with_prolog(prediction, validation_program, eval_config, timeout=t))
 
         # Calculate metrics
@@ -402,5 +409,5 @@ class PublicVerifier(evaluate.Metric):
             "accuracy": accuracy,
             "partial_score": partial_score,
             "syntax_score": syntax_score,
-            "detailed_results": results
+            "detailed_results": results,
         }

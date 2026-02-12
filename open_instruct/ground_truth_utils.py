@@ -22,7 +22,6 @@ from typing import Any
 
 import numpy as np
 import requests
-import litellm
 from litellm import acompletion
 
 from open_instruct import context_window_checker, logger_utils
@@ -50,7 +49,9 @@ logging.getLogger("cost_calculator").setLevel(logging.WARNING)
 # Optional: set LITELLM_DEBUG=1 to turn on litellm debug (e.g. to debug judge errors).
 # Warning: debug mode may log API keys; use only in safe environments.
 if os.environ.get("LITELLM_DEBUG", "").strip() in ("1", "true", "True", "yes"):
-    litellm._turn_on_debug()
+    from litellm import _turn_on_debug
+
+    _turn_on_debug()
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
@@ -95,6 +96,14 @@ class CodeVerifierConfig(VerifierConfig):
     code_max_execution_time: float
     code_pass_rate_reward_threshold: float
     code_apply_perf_penalty: bool
+
+
+@dataclasses.dataclass
+class SLRBenchVerifierConfig(VerifierConfig):
+    """Config for SLR-Bench verifier. Use slr_judge_type to switch between isomorphic and flawed judges."""
+
+    slr_judge_type: str = "isomorphic"
+    """Which SLR judge to use: 'isomorphic' (PrivateVerifier.py) or 'flawed' (PublicVerifier.py)."""
 
 
 @dataclasses.dataclass
@@ -949,9 +958,11 @@ class SLRBenchVerifier(VerifierFunction):
     "positive_predicate" and "negative_predicate", e.g. "eastbound" / "westbound").
     """
 
-    def __init__(self, verifier_config: VerifierConfig | None = None) -> None:
+    def __init__(self, verifier_config: SLRBenchVerifierConfig) -> None:
         super().__init__("slr_bench", verifier_config=verifier_config, weight=1.0)
-        self._metric = None  # loaded lazily on first __call__ to avoid polluting sys.modules before Ray actors are created
+        self._metric = (
+            None  # loaded lazily on first __call__ to avoid polluting sys.modules before Ray actors are created
+        )
 
     def _get_metric(self):
         """Lazy-load the evaluate metric on first use (not in __init__).
@@ -964,8 +975,12 @@ class SLRBenchVerifier(VerifierFunction):
             from evaluate import load  # noqa: PLC0415
 
             root_dir = os.path.dirname(os.path.abspath(__file__))
-            judge_path = os.path.join(root_dir, "slr", "PrivateVerifier.py")
-            # public_judge_path = os.path.join(root_dir, "slr", "PublicVerifier.py")
+            judge_type = (getattr(self.verifier_config, "slr_judge_type", "isomorphic") or "isomorphic").lower()
+            # Flawed = PublicVerifier, isomorphic = PrivateVerifier
+            if judge_type == "flawed":
+                judge_path = os.path.join(root_dir, "slr", "PublicVerifier.py")
+            else:
+                judge_path = os.path.join(root_dir, "slr", "PrivateVerifier.py")
             self._metric = load(judge_path)
         return self._metric
 
@@ -977,7 +992,9 @@ class SLRBenchVerifier(VerifierFunction):
             return prediction.strip()
         return cleaned.strip()
 
-    def __call__(self, tokenized_prediction: list[int], prediction: str, label: Any, query: str | None = None) -> VerificationResult:
+    def __call__(
+        self, tokenized_prediction: list[int], prediction: str, label: Any, query: str | None = None
+    ) -> VerificationResult:
         """
         Label comes from: dataset row key GROUND_TRUTHS_KEY (see dataset_transformation).
         For SLR-Bench it is set by slr_bench_prepare_v1; rlvr_tokenize_v3 wraps it in a list.
@@ -1004,8 +1021,7 @@ class SLRBenchVerifier(VerifierFunction):
                 return VerificationResult(score=0.0)
         if not isinstance(ref, dict):
             logger.warning(
-                "SLRBenchVerifier expected label to be a dict (or list of one dict). "
-                "Got type=%s, repr=%s.",
+                "SLRBenchVerifier expected label to be a dict (or list of one dict). Got type=%s, repr=%s.",
                 type(ref).__name__,
                 repr(ref)[:500],
             )
@@ -1013,8 +1029,7 @@ class SLRBenchVerifier(VerifierFunction):
         validation_program = ref.get("validation_program") or ref.get("validation program")
         if not validation_program:
             logger.warning(
-                "SLRBenchVerifier label must contain 'validation_program' or 'validation program'. "
-                "Keys present: %s.",
+                "SLRBenchVerifier label must contain 'validation_program' or 'validation program'. Keys present: %s.",
                 list(ref.keys()),
             )
             return VerificationResult(score=0.0)
@@ -1046,7 +1061,7 @@ class SLRBenchVerifier(VerifierFunction):
 
     @classmethod
     def get_config_class(cls) -> type:
-        return VerifierConfig
+        return SLRBenchVerifierConfig
 
 
 def build_all_verifiers(args, streaming_config=None) -> dict[str, VerifierFunction]:
@@ -1078,7 +1093,7 @@ def build_all_verifiers(args, streaming_config=None) -> dict[str, VerifierFuncti
             instance = CodeVerifier(stdio_config)
             instance.name = "code_stdio"
             verifiers["code_stdio"] = instance
-        
+
         if subclass == SLRBenchVerifier:
             instance = SLRBenchVerifier(verifier_config)
             instance.name = "slr_bench"

@@ -1114,6 +1114,12 @@ def create_vllm_engines(
             placement_group_bundle_index=bundle_indices[0],
         )
 
+        # Assign a unique VLLM_DP_MASTER_PORT per engine to avoid EADDRINUSE when many
+        # engines initialize simultaneously (e.g. 48 engines across 6 nodes). vLLM uses
+        # this port for internal distributed communication; without it, port 0 (OS-assigned)
+        # can collide when multiple processes bind at the same time.
+        vllm_dp_master_port = 29600 + i
+
         vllm_engines.append(
             ray.remote(LLMRayActor)
             .options(
@@ -1125,6 +1131,7 @@ def create_vllm_engines(
                         "VLLM_ENABLE_V1_MULTIPROCESSING": "0",
                         "TORCH_CUDA_ARCH_LIST": get_cuda_arch_list(),
                         "RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO": "0",
+                        "VLLM_DP_MASTER_PORT": str(vllm_dp_master_port),
                     }
                 ),
             )

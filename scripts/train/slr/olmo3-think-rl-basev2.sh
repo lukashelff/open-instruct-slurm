@@ -2,20 +2,20 @@
 # OLMo-3 7B Think RL (GRPO) - Slurm 5-node run: 1 node for gradient updates (Ray head + policy trainers), 4 nodes for inference (vLLM).
 # grpo_fast.py supports multi-node when the Ray cluster is already running (see configs/beaker_configs/ray_node_setup.sh).
 # Task 0 = head (Ray head + grpo_fast.py + 8 policy trainers); tasks 1–4 = Ray workers (32 vLLM engines across 4 nodes).
-#SBATCH --job-name=RLVR-soofiv2
+#SBATCH --job-name=RLVR-soofi-basev2
 #SBATCH --partition=all
 #SBATCH --nodes=6
 #SBATCH --gpus-per-node=8
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=64
-#SBATCH --mem=1600G
+#SBATCH --mem=1000G
 #SBATCH --time=200:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 #SBATCH --qos=normal
 #SBATCH --open-mode=append
 #SBATCH --exclude=cn13,cn06
-JOB_NAME="RLVR-soofiv2"
+JOB_NAME="RLVR-soofi-basev2"
 
 
 # --- 1. Variables & Paths ---
@@ -27,6 +27,12 @@ RAY_PORT=6379
 LLM_JUDGE_MODEL="Qwen/Qwen3-32B"
 LLM_JUDGE_PORT=8000
 LLM_JUDGE_NUM_ENGINES=8
+
+# Code verification API (CPU-only, no GPUs): runs model-generated Python in subprocesses against test cases for code datasets.
+# Set CODE_API_URL="" to disable. Unset = start local server on head (uvicorn). Or set to any http(s) URL to use that endpoint.
+CODE_API_PORT=1234
+CODE_API_URL="${CODE_API_URL:-http://127.0.0.1:${CODE_API_PORT}/test_program}"
+
 
 # --- 2. Slurm env (for logging) ---
 echo "=========================================="
@@ -41,8 +47,10 @@ LLM_JUDGE_NODE=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | sed -n '1p')
 HEAD_NODE=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | sed -n '2p')
 LLM_JUDGE_IP=$(srun --nodes=1 --ntasks=1 -w "$LLM_JUDGE_NODE" hostname --ip-address)
 HEAD_IP=$(srun --nodes=1 --ntasks=1 -w "$HEAD_NODE" hostname --ip-address)
+export CODE_API_URL="http://${LLM_JUDGE_IP}:${CODE_API_PORT}/test_program"
 echo "Ray head: $HEAD_NODE ($HEAD_IP:$RAY_PORT)"
 echo "Judge server: $LLM_JUDGE_NODE ($LLM_JUDGE_IP:$LLM_JUDGE_PORT) --> HOSTED_VLLM_API_BASE=$HOSTED_VLLM_API_BASE"
+echo "Code API: $CODE_API_URL"
 echo "Port forwarding: ssh -L 8265:$HEAD_IP:8265 -L 8765:$HEAD_IP:8765 43_cluster  # then open http://localhost:8265 (Ray) and http://localhost:8765 (ActorManager)"
 echo "=========================================="
 
@@ -85,6 +93,8 @@ APPTAINER_ENV=(
   --env "RAY_PORT=$RAY_PORT"
   --env "RAY_DEDUP_LOGS=0"
   --env "LITELLM_DEBUG=0"
+  --env "CODE_API_URL=$CODE_API_URL"
+  --env "CODE_API_PORT=$CODE_API_PORT"
 )
 
 # --- 5. One srun, N tasks: task 0 = head (Ray + grpo_fast.py), others = workers. Use SLURM_PROCID (hostname can differ in container). ---
@@ -129,7 +139,7 @@ GRPO_ARGS="--exp_name $JOB_NAME \
   --llm_judge_max_tokens 1048 \
   --llm_judge_max_context_length 32768 \
   --clip_higher 0.272 \
-  --code_api_url https://p9f1719l7f.execute-api.us-west-2.amazonaws.com/prod/test_program \
+  --code_api_url $CODE_API_URL \
   --code_pass_rate_reward_threshold 0.99 \
   --seed 1 \
   --local_eval_every 50 \
@@ -160,6 +170,10 @@ srun --nodes=6 --ntasks=6 apptainer exec --nv "${APPTAINER_ENV[@]}" "$CONTAINER_
       uv run python open_instruct/grpo_fast.py '"$GRPO_ARGS"' || true
       uv run ray stop --force 2>/dev/null || true
     elif [ "${SLURM_PROCID:-0}" = "0" ]; then
+      echo "Head: starting local code verification API on port $CODE_API_PORT (CPU-only)"
+      uv run uvicorn open_instruct.code_utils.api:app --host 0.0.0.0 --port "$CODE_API_PORT" &
+      until curl -sf "http://127.0.0.1:${CODE_API_PORT}/health" >/dev/null 2>&1; do echo "  waiting for code API..."; sleep 2; done
+      echo "Code API is up."
       echo "Judge node: starting vLLM (model=$LLM_JUDGE_MODEL, port=$LLM_JUDGE_PORT, tp=$LLM_JUDGE_NUM_ENGINES)"
       CUDA_VISIBLE_DEVICES=$(seq -s, 0 $((LLM_JUDGE_NUM_ENGINES - 1))) exec uv run vllm serve "$LLM_JUDGE_MODEL" --host 0.0.0.0 --port "$LLM_JUDGE_PORT" --tensor-parallel-size "$LLM_JUDGE_NUM_ENGINES"
       until curl -sf "http://${LLM_JUDGE_IP}:${LLM_JUDGE_PORT}/health" >/dev/null 2>&1; do echo "  waiting for judge..."; sleep 10; done

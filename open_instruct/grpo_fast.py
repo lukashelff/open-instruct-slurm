@@ -280,6 +280,7 @@ class PolicyTrainerRayProcess(RayProcess):
             dist_init_required=False,
             mpu=self.mpu,
         )
+        logger.info(f"{self.rank=}: Policy model and DeepSpeed initialized.")
         optimization_steps_done = 0
         if args.checkpoint_state_dir:
             # check if the dir exists
@@ -332,8 +333,9 @@ class PolicyTrainerRayProcess(RayProcess):
                 )
         self.model.train()
 
-        # reference model
+        # reference model (skip when beta=0 to avoid second full model load and barrier)
         if args.load_ref_policy:
+            logger.info(f"{self.rank=}: Loading reference policy (second model load)...")
             ds_config, self.ref_policy_hf_ds_config = get_eval_ds_config(
                 offload=False,
                 # inference model only has stage 3 (sharding) or stage 0 (no sharding)
@@ -357,6 +359,7 @@ class PolicyTrainerRayProcess(RayProcess):
                 ref_policy_update_freq=args.ref_policy_update_freq,
                 alpha=args.alpha,
             )
+            logger.info(f"{self.rank=}: Reference policy loaded.")
         self.local_metrics = utils.MetricsTracker(max_metrics=512, device=self.device)
 
         if self.mpu is not None:
@@ -2153,14 +2156,7 @@ def main(
     # so placement groups can use STRICT_SPREAD across nodes. Otherwise start a local cluster.
     ray_init_kwargs: dict = {
         "dashboard_host": "0.0.0.0",
-        "runtime_env": {
-            "excludes": [
-                ".git/",
-                "checkpoints/",
-                "output/",
-            ],
-            "env_vars": dict(os.environ),
-        },
+        "runtime_env": {"excludes": [".git/", "checkpoints/", "output/"], "env_vars": dict(os.environ)},
     }
     if os.environ.get("RAY_ADDRESS"):
         ray_init_kwargs["address"] = "auto"
