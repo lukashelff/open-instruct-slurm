@@ -55,7 +55,7 @@ from typing import Any, Literal
 import numpy as np
 import torch
 import transformers
-from datasets import Dataset, concatenate_datasets, load_dataset, Value
+from datasets import Dataset, Value, concatenate_datasets, load_dataset
 from huggingface_hub import ModelCard, revision_exists
 from rich.console import Console
 from rich.text import Text
@@ -933,7 +933,7 @@ TOOLS_COLUMN_KEY = "tools"
 
 # Cache version: increment this when transformation logic changes significantly
 # to invalidate old caches. v2: Added per-sample tool filtering in rlvr_tokenize_v3.
-DATASET_CACHE_VERSION = "v2"
+DATASET_CACHE_VERSION = "v4"
 
 
 def validate_dataset_tools(dataset: Dataset, configured_tool_names: list[str], dataset_name: str = "dataset") -> None:

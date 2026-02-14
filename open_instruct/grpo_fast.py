@@ -1748,6 +1748,14 @@ def maybe_evaluate(
         # timeout 0.01 if this is not the last training step
         # otherwise, wait to get the last evaluation generations (long timeout just in case)
         timeout = 0.01 if training_step < args.num_training_steps else 100
+        # Use a short timeout on most steps to avoid blocking training.
+        # Use a longer timeout when we expect eval results: on steps that are multiples of
+        # local_eval_every (we may have results from the previous eval cycle) and on the last step.
+        # Eval with LLM judge or long generations can take many minutes.
+        # is_expecting_eval_results = (
+        #     training_step % args.local_eval_every == 0 and training_step > args.local_eval_every
+        # ) or training_step >= args.num_training_steps
+        # timeout = args.eval_receive_timeout if is_expecting_eval_results else 0.01
 
         # Accumulate evaluation results from all vLLM engines
         eval_result, eval_batch, eval_reward_metrics, _ = accumulate_inference_batches(

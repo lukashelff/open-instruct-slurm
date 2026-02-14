@@ -45,6 +45,8 @@ class ExperimentConfig:
     """RUNTIME VALUE: The number of training_steps to train"""
     local_eval_every: int = 100
     """Run evaluation after this many training steps. This controls in-loop evals, which reuse the generation/reward verifier setup. Set to -1 to disable."""
+    eval_receive_timeout: float | None = None
+    """Seconds to wait for eval results when receiving them. Eval runs asynchronously; with LLM judge or long generations this can take several minutes. Increase if eval metrics never appear."""
     save_freq: int = 200
     """How many train steps to save the model"""
     backend_timeout: int = 120

@@ -2,7 +2,7 @@
 # OLMo-3 7B Think RL (GRPO) - Slurm 5-node run: 1 node for gradient updates (Ray head + policy trainers), 4 nodes for inference (vLLM).
 # grpo_fast.py supports multi-node when the Ray cluster is already running (see configs/beaker_configs/ray_node_setup.sh).
 # Task 0 = head (Ray head + grpo_fast.py + 8 policy trainers); tasks 1–4 = Ray workers (32 vLLM engines across 4 nodes).
-#SBATCH --job-name=RLVR-soofi-Isomorphic-RL
+#SBATCH --job-name=RLVR-soofi-Isomorphic-RLv2
 #SBATCH --partition=all
 #SBATCH --nodes=7
 #SBATCH --gpus-per-node=8
@@ -15,7 +15,7 @@
 #SBATCH --qos=normal
 #SBATCH --open-mode=append
 #SBATCH --exclude=cn13,cn06
-JOB_NAME="RLVR-soofi-Isomorphic-RL"
+JOB_NAME="RLVR-soofi-Isomorphic-RLv2"
 
 
 # --- 1. Variables & Paths ---
@@ -52,7 +52,7 @@ export VLLM_ALLOW_INSECURE_SERIALIZATION=1
 export VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
 export NCCL_DEBUG=ERROR
 
-mkdir -p "$BASE_DIR/logs" "/tmp/triton" "$BASE_DIR/.cache/nltk_data" "$BASE_DIR/.cache/open_instruct_dataset_cache" "$OUTPUT_DIR" "$OUTPUT_DIR/rollouts"
+mkdir -p "$BASE_DIR/logs" "$BASE_DIR/.cache/nltk_data" "$BASE_DIR/.cache/open_instruct_dataset_cache" "$OUTPUT_DIR" "$OUTPUT_DIR/rollouts"
 
 APPTAINER_ENV=(
   --bind "$BASE_DIR:/stage"
@@ -60,7 +60,7 @@ APPTAINER_ENV=(
   --env "UV_CACHE_DIR=/stage/.cache/uv"
   --env "HF_HOME=/stage/.cache/huggingface"
   --env "NLTK_DATA=/stage/.cache/nltk_data"
-  --env "TRITON_CACHE_DIR=/tmp/triton"
+  --env "TRITON_CACHE_DIR=/tmp/triton3"
   --env "HOSTED_VLLM_API_BASE=http://ceres-cs-aus-447.reviz.ai2.in:8001/v1"
   --env "HOSTED_VLLM_API_KEY=${HOSTED_VLLM_API_KEY:-EMPTY}"
   --env "NCCL_DEBUG=ERROR"
@@ -89,8 +89,8 @@ GRPO_ARGS="--exp_name $JOB_NAME \
   --kl_estimator 2 \
   --dataset_mixer_list AIML-TUDA/SLR-Bench:v1-All 1.0 \
   --dataset_mixer_list_splits train \
-  --dataset_mixer_eval_list AIML-TUDA/SLR-Bench:v1-Easy 8 \
-  --dataset_mixer_eval_list_splits validation \
+  --dataset_mixer_eval_list allenai/Dolci-Think-RL-7B 8 AIML-TUDA/SLR-Bench:v1-All 4 \
+  --dataset_mixer_eval_list_splits train \
   --max_prompt_token_length 4096 \
   --response_length 30720 \
   --pack_length 35840 \
@@ -137,7 +137,7 @@ GRPO_ARGS="--exp_name $JOB_NAME \
 srun --nodes=7 --ntasks=7 apptainer exec --nv "${APPTAINER_ENV[@]}" "$CONTAINER_IMAGE" \
   bash -c '
     cd /stage
-    mkdir -p /tmp/triton
+    mkdir -p /tmp/triton3
     # Use SLURM_PROCID to pick head (task 0 = head); hostname can differ inside container
     if [ "${SLURM_PROCID:-0}" = "0" ]; then
       echo "Head: starting Ray head then grpo_fast.py (1 node = gradient updates)"

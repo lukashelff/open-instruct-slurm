@@ -11,6 +11,7 @@ import copy
 import dataclasses
 import json
 import logging
+import math
 import os
 import re
 import string
@@ -992,6 +993,83 @@ class SLRBenchVerifier(VerifierFunction):
             return prediction.strip()
         return cleaned.strip()
 
+    @staticmethod
+    def get_rule_simplicity_bonus(model_response: str) -> float:
+        """
+        Compute a gentle rule simplicity bonus in [0,1].
+
+        This version is tuned for domains where correct rules are naturally
+        long and complex. It avoids over-penalizing necessary complexity and
+        mainly discourages excessive verbosity or pathological outputs.
+        """
+
+        if not model_response or not model_response.strip():
+            return 0.0
+
+        text = model_response.strip()
+
+        # Extract rule-like statements using regex
+        # Matches patterns like:
+        # ancestor(X,Y) :- parent(X,Z), ancestor(Z,Y).
+        rule_pattern = r"[a-zA-Z_][a-zA-Z0-9_]*\s*\([^)]*\)\s*(?::-\s*[^.]+)?\."
+        rules = re.findall(rule_pattern, text)
+
+        # If no formal rules found, return neutral bonus
+        if not rules:
+            return 0.8  # neutral-safe default
+
+        num_rules = len(rules)
+        total_literals = 0
+        total_length = sum(len(r) for r in rules)
+
+        for rule in rules:
+            if ":-" in rule:
+                _, body = rule.split(":-", 1)
+                literals = [lit.strip() for lit in body.split(",") if lit.strip()]
+                total_literals += len(literals)
+            else:
+                total_literals += 1
+
+        # Gentle penalties suitable for complex ILP domains
+        literal_score = math.exp(-0.035 * max(0, total_literals - 6))
+        rule_count_score = math.exp(-0.08 * max(0, num_rules - 2))
+        length_score = math.exp(-0.001 * max(0, total_length - 120))
+
+        simplicity = 0.6 * literal_score + 0.25 * rule_count_score + 0.15 * length_score
+
+        return max(0.0, min(1.0, simplicity))
+
+    @staticmethod
+    def compute_reward(
+        accuracy: float, partial_score: float, syntax_score: float, rule_simplicity_bonus: float, k: int = 6
+    ) -> float:
+        """
+        Compute normalized reward in [0,1] for ILP rule induction using GRPO.
+        """
+
+        # Component weights (relative importance)
+        accuracy_weight = 2.0
+        partial_weight = 1.0
+        syntax_weight = 0.2
+        simplicity_weight = 0.2
+
+        # Components
+        accuracy_bonus = accuracy_weight if accuracy == 1.0 else 0.0
+        partial_reward = partial_weight * (partial_score**k)
+        syntax_bonus = syntax_weight * syntax_score
+        simplicity_bonus = simplicity_weight * rule_simplicity_bonus
+
+        # Raw reward
+        raw_reward = accuracy_bonus + partial_reward + syntax_bonus + simplicity_bonus
+
+        # Maximum possible reward (for normalization)
+        max_reward = accuracy_weight + partial_weight * 1.0 + syntax_weight * 1.0 + simplicity_weight * 1.0
+
+        # Normalize to [0,1]
+        normalized_reward = raw_reward / max_reward
+
+        return normalized_reward
+
     def __call__(
         self, tokenized_prediction: list[int], prediction: str, label: str | dict, query: str | None = None
     ) -> VerificationResult:
@@ -1010,8 +1088,12 @@ class SLRBenchVerifier(VerifierFunction):
                 ref = json.loads(ref)
             except json.JSONDecodeError:
                 ref = ref
-        if not isinstance(ref, dict) or not "validation_program" in ref or not "evaluation_config" in ref:
-            logger.warning("SLRBenchVerifier expected label to be a dict with 'validation_program' and 'evaluation_config'. Got type=%s. with value %s", type(ref).__name__, ref)
+        if not isinstance(ref, dict) or "validation_program" not in ref or "evaluation_config" not in ref:
+            logger.warning(
+                "SLRBenchVerifier expected label to be a dict with 'validation_program' and 'evaluation_config'. Got type=%s. with value %s",
+                type(ref).__name__,
+                ref,
+            )
             return VerificationResult(score=0.0)
         rule = self._extract_prolog_rule(prediction)
         try:
@@ -1026,7 +1108,12 @@ class SLRBenchVerifier(VerifierFunction):
             logger.warning("SLRBenchVerifier: metric._compute() returned None.")
             return VerificationResult(score=0.0)
         try:
-            score = float(result.get("accuracy", result.get("partial_score", 0.0)))
+            accuracy = result["accuracy"]
+            partial_score = result["partial_score"]
+            syntax_score = result["syntax_score"]
+            rule_simplicity_bonus = self.get_rule_simplicity_bonus(rule)
+            # Reward formula (clamped to [0, 1]): R = 2·accuracy + partial_score^6 + 0.2·syntax + 0.2·simplicity
+            score = self.compute_reward(accuracy, partial_score, syntax_score, rule_simplicity_bonus)
         except (TypeError, ValueError) as e:
             logger.warning("SLRBenchVerifier could not read score from result %s: %s", result, e)
             return VerificationResult(score=0.0)

@@ -4,7 +4,7 @@
 # Task 0 = head (Ray head + grpo_fast.py + 8 policy trainers); tasks 1–4 = Ray workers (32 vLLM engines across 4 nodes).
 #SBATCH --job-name=RLVR-soofi-Non-Isomorphic-RL
 #SBATCH --partition=all
-#SBATCH --nodes=2
+#SBATCH --nodes=7
 #SBATCH --gpus-per-node=8
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=64
@@ -14,7 +14,7 @@
 #SBATCH --error=logs/%x_%j.err
 #SBATCH --qos=normal
 #SBATCH --open-mode=append
-#SBATCH --exclude=cn13,cn06
+#SBATCH --exclude=cn13,cn06,cn05
 JOB_NAME="RLVR-soofi-Non-Isomorphic-RL"
 
 
@@ -51,8 +51,9 @@ export OPENAI_API_KEY="openAI_TOKEN"
 export VLLM_ALLOW_INSECURE_SERIALIZATION=1
 export VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
 export NCCL_DEBUG=ERROR
+export TRITON_CACHE_DIR="/tmp/triton4"
 
-mkdir -p "$BASE_DIR/logs" "/tmp/triton" "$BASE_DIR/.cache/nltk_data" "$BASE_DIR/.cache/open_instruct_dataset_cache" "$OUTPUT_DIR" "$OUTPUT_DIR/rollouts"
+mkdir -p "$BASE_DIR/logs" "$BASE_DIR/.cache/nltk_data" "$BASE_DIR/.cache/open_instruct_dataset_cache" "$OUTPUT_DIR" "$OUTPUT_DIR/rollouts"
 
 APPTAINER_ENV=(
   --bind "$BASE_DIR:/stage"
@@ -60,7 +61,6 @@ APPTAINER_ENV=(
   --env "UV_CACHE_DIR=/stage/.cache/uv"
   --env "HF_HOME=/stage/.cache/huggingface"
   --env "NLTK_DATA=/stage/.cache/nltk_data"
-  --env "TRITON_CACHE_DIR=/tmp/triton"
   --env "HOSTED_VLLM_API_BASE=http://ceres-cs-aus-447.reviz.ai2.in:8001/v1"
   --env "HOSTED_VLLM_API_KEY=${HOSTED_VLLM_API_KEY:-EMPTY}"
   --env "NCCL_DEBUG=ERROR"
@@ -68,8 +68,8 @@ APPTAINER_ENV=(
   --env "HEAD_NODE=$HEAD_NODE"
   --env "RAY_ADDRESS=$RAY_ADDRESS"
   --env "RAY_PORT=$RAY_PORT"
-  --env "RAY_DEDUP_LOGS=1"
-  --env "LITELLM_DEBUG=1"
+  --env "RAY_DEDUP_LOGS=0"
+  --env "LITELLM_DEBUG=0"
 )
 
 # --- 5. One srun, N tasks: task 0 = head (Ray + grpo_fast.py), others = workers. Use SLURM_PROCID (hostname can differ in container). ---
@@ -85,12 +85,13 @@ GRPO_ARGS="--exp_name $JOB_NAME \
   --per_device_train_batch_size 1 \
   --output_dir $OUTPUT_DIR \
   --rollouts_save_path $OUTPUT_DIR/rollouts \
+  --save_traces \
   --dataset_local_cache_dir /stage/.cache/open_instruct_dataset_cache \
   --kl_estimator 2 \
   --dataset_mixer_list AIML-TUDA/SLR-Bench:v1-All 1.0 \
   --dataset_mixer_list_splits train \
-  --dataset_mixer_eval_list AIML-TUDA/SLR-Bench:v1-Easy 8 \
-  --dataset_mixer_eval_list_splits validation \
+  --dataset_mixer_eval_list allenai/Dolci-Think-RL-7B 8 AIML-TUDA/SLR-Bench:v1-Easy 4 \
+  --dataset_mixer_eval_list_splits train \
   --max_prompt_token_length 4096 \
   --response_length 30720 \
   --pack_length 35840 \
@@ -104,7 +105,7 @@ GRPO_ARGS="--exp_name $JOB_NAME \
   --total_episodes 10000000 \
   --deepspeed_stage 3 \
   --num_learners_per_node 8 \
-  --vllm_num_engines 8 \
+  --vllm_num_engines 48 \
   --vllm_tensor_parallel_size 1 \
   --vllm_gpu_memory_utilization 0.80 \
   --vllm_sync_backend nccl \
@@ -119,8 +120,8 @@ GRPO_ARGS="--exp_name $JOB_NAME \
   --code_api_url https://p9f1719l7f.execute-api.us-west-2.amazonaws.com/prod/test_program \
   --code_pass_rate_reward_threshold 0.99 \
   --seed 1 \
-  --local_eval_every 50 \
-  --save_freq 25 \
+  --local_eval_every 25 \
+  --save_freq 50 \
   --try_launch_beaker_eval_jobs_on_weka False \
   --gradient_checkpointing \
   --with_tracking \
@@ -138,7 +139,7 @@ GRPO_ARGS="--exp_name $JOB_NAME \
 srun --nodes=2 --ntasks=2 apptainer exec --nv "${APPTAINER_ENV[@]}" "$CONTAINER_IMAGE" \
   bash -c '
     cd /stage
-    mkdir -p /tmp/triton
+    mkdir -p /tmp/triton4
     # Use SLURM_PROCID to pick head (task 0 = head); hostname can differ inside container
     if [ "${SLURM_PROCID:-0}" = "0" ]; then
       echo "Head: starting Ray head then grpo_fast.py (1 node = gradient updates)"
