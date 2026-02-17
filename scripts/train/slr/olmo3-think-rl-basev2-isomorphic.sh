@@ -7,7 +7,7 @@
 #SBATCH --nodes=8
 #SBATCH --gpus-per-node=8
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=64
+#SBATCH --cpus-per-task=112
 #SBATCH --mem=1000G
 #SBATCH --time=200:00:00
 #SBATCH --output=logs/%x_%j.out
@@ -58,10 +58,12 @@ export OPENAI_API_KEY="openAI_TOKEN"
 export VLLM_ALLOW_INSECURE_SERIALIZATION=1
 export VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
 export NCCL_DEBUG=ERROR
-export TRITON_CACHE_DIR="/tmp/triton2"
 export RAY_ADDRESS="${HEAD_IP}:${RAY_PORT}"
 export HOSTED_VLLM_API_BASE="http://${LLM_JUDGE_IP}:${LLM_JUDGE_PORT}/v1"
 export CODE_API_URL="http://${LLM_JUDGE_IP}:${CODE_API_PORT}/test_program"
+export HF_HUB_OFFLINE=True
+
+
 
 echo "Ray head: $HEAD_NODE ($HEAD_IP:$RAY_PORT)"
 echo "Judge server: $LLM_JUDGE_NODE ($LLM_JUDGE_IP:$LLM_JUDGE_PORT) --> HOSTED_VLLM_API_BASE=$HOSTED_VLLM_API_BASE"
@@ -75,9 +77,9 @@ mkdir -p "$BASE_DIR/logs" "$BASE_DIR/.cache/nltk_data" "$BASE_DIR/.cache/open_in
 
 APPTAINER_ENV=(
   --bind "$BASE_DIR:/stage"
+  --env "TMPDIR=/tmp"
   --env "UV_CACHE_DIR=/stage/.cache/uv"
   --env "HF_HOME=/stage/.cache/huggingface"
-  --env "TMPDIR=/tmp"
   --env "NLTK_DATA=/stage/.cache/nltk_data"
   --env "HOSTED_VLLM_API_BASE=$HOSTED_VLLM_API_BASE"
   --env "HOSTED_VLLM_API_KEY=${HOSTED_VLLM_API_KEY:-EMPTY}"
@@ -86,7 +88,6 @@ APPTAINER_ENV=(
   --env "LLM_JUDGE_MODEL=$LLM_JUDGE_MODEL"
   --env "LLM_JUDGE_NUM_ENGINES=$LLM_JUDGE_NUM_ENGINES"
   --env "NCCL_DEBUG=ERROR"
-  --env "VLLM_LOGGING_LEVEL=WARNING"
   --env "HEAD_NODE=$HEAD_NODE"
   --env "RAY_ADDRESS=$RAY_ADDRESS"
   --env "RAY_PORT=$RAY_PORT"
@@ -109,7 +110,7 @@ GRPO_ARGS="--exp_name $JOB_NAME \
   --output_dir $OUTPUT_DIR \
   --rollouts_save_path $OUTPUT_DIR/rollouts \
   --save_traces \
-  --dataset_local_cache_dir /stage/.cache/open_instruct_dataset_cache3 \
+  --dataset_local_cache_dir /stage/.cache/open_instruct_dataset_cache \
   --kl_estimator 2 \
   --dataset_mixer_list allenai/Dolci-Think-RL-7B 1.0 AIML-TUDA/SLR-Bench:v1-All 1.0 \
   --dataset_mixer_list_splits train \
@@ -136,13 +137,15 @@ GRPO_ARGS="--exp_name $JOB_NAME \
   --apply_verifiable_reward true \
   --llm_judge_model hosted_vllm/$LLM_JUDGE_MODEL \
   --llm_judge_timeout 1200 \
-  --llm_judge_max_tokens 1048 \
+  --llm_judge_max_tokens 2048 \
   --llm_judge_max_context_length 32768 \
   --clip_higher 0.272 \
   --code_api_url $CODE_API_URL \
   --code_pass_rate_reward_threshold 0.99 \
+  --code_max_execution_time 6 \
   --seed 1 \
-  --local_eval_every 25 \
+  --local_eval_every -1 \
+  --eval_receive_timeout 600 \
   --save_freq 50 \
   --try_launch_beaker_eval_jobs_on_weka False \
   --gradient_checkpointing \
@@ -154,14 +157,12 @@ GRPO_ARGS="--exp_name $JOB_NAME \
   --async_steps 8 \
   --advantage_normalization_type centered \
   --truncated_importance_sampling_ratio_cap 2.0 \
-  --push_to_hub false \
-  --oe_eval_tasks mmlu:cot::hamish_zs_reasoning_deepseek,popqa::hamish_zs_reasoning_deepseek,simpleqa::tulu-thinker_deepseek,bbh:cot::hamish_zs_reasoning_deepseek_v2,gpqa:0shot_cot::hamish_zs_reasoning_deepseek,zebralogic::hamish_zs_reasoning_deepseek,agi_eval_english:0shot_cot::hamish_zs_reasoning_deepseek,minerva_math::hamish_zs_reasoning_deepseek,minerva_math_500::hamish_zs_reasoning_deepseek,gsm8k::zs_cot_latex_deepseek,omega_500:0-shot-chat_deepseek,aime:zs_cot_r1::pass_at_32_2024_deepseek,aime:zs_cot_r1::pass_at_32_2025_deepseek,codex_humanevalplus:0-shot-chat::tulu-thinker_deepseek,mbppplus:0-shot-chat::tulu-thinker_deepseek,livecodebench_codegeneration::tulu-thinker_deepseek,alpaca_eval_v3::hamish_zs_reasoning_deepseek,ifeval::hamish_zs_reasoning_deepseek"
+  --push_to_hub false"
 
 # Do not pass SLURM_PROCID=... (script's value is unset; each srun task has its own in the environment). Container inherits it.
 srun --nodes=8 --ntasks=8 apptainer exec --nv "${APPTAINER_ENV[@]}" "$CONTAINER_IMAGE" \
   bash -c '
     cd /stage
-    mkdir -p /tmp/triton2
     if [ "${SLURM_PROCID:-0}" = "1" ]; then
       echo "Head: starting Ray head then grpo_fast.py (1 node = gradient updates)"
       uv run ray start --head --port=$RAY_PORT --dashboard-host=0.0.0.0
@@ -171,7 +172,7 @@ srun --nodes=8 --ntasks=8 apptainer exec --nv "${APPTAINER_ENV[@]}" "$CONTAINER_
       uv run ray stop --force 2>/dev/null || true
     elif [ "${SLURM_PROCID:-0}" = "0" ]; then
       echo "Head: starting local code verification API on port $CODE_API_PORT (CPU-only)"
-      uv run uvicorn open_instruct.code_utils.api:app --host 0.0.0.0 --port "$CODE_API_PORT" &
+      uv run uvicorn open_instruct.code_utils.api:app --host 0.0.0.0 --port "$CODE_API_PORT" --workers 24 &
       until curl -sf "http://127.0.0.1:${CODE_API_PORT}/health" >/dev/null 2>&1; do echo "  waiting for code API..."; sleep 2; done
       echo "Code API is up."
       echo "Judge node: starting vLLM (model=$LLM_JUDGE_MODEL, port=$LLM_JUDGE_PORT, tp=$LLM_JUDGE_NUM_ENGINES)"
