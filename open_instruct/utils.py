@@ -220,7 +220,9 @@ def ray_get_with_progress(
             results[idx] = future.result()
             completion_times[idx] = time.perf_counter() - t0
     except TimeoutError as e:
-        raise TimeoutError(f"{desc} failed.") from e
+        raise TimeoutError(f"{desc} failed with timeout {timeout} seconds.") from e
+    except Exception as e:
+        raise Exception(f"{desc} failed with error: {e}") from e
 
     return results, completion_times
 

@@ -333,9 +333,8 @@ class PolicyTrainerRayProcess(RayProcess):
                 )
         self.model.train()
 
-        # reference model (skip when beta=0 to avoid second full model load and barrier)
+        # reference model
         if args.load_ref_policy:
-            logger.info(f"{self.rank=}: Loading reference policy (second model load)...")
             ds_config, self.ref_policy_hf_ds_config = get_eval_ds_config(
                 offload=False,
                 # inference model only has stage 3 (sharding) or stage 0 (no sharding)
@@ -421,7 +420,7 @@ class PolicyTrainerRayProcess(RayProcess):
             return_dict=True,
         )
         logits = output.logits
-        logits /= temperature + 1e-7
+        logits /= max(temperature, 1e-7)
         logprob = log_softmax_and_gather(logits, input_ids[:, 1:])
 
         # For now, entropy is just for monitoring, and we don't pass gradients through it.
@@ -1113,8 +1112,13 @@ def setup_runtime_variables(
             "/weka/oe-adapt-default/allennlp/deletable_open_instruct_dataset_cache"
         )
     args.world_size = sum(args.num_learners_per_node)
-    args.num_training_steps = args.total_episodes // (
-        streaming_config.num_unique_prompts_rollout * streaming_config.num_samples_per_prompt_rollout
+    rollout_size = streaming_config.num_unique_prompts_rollout * streaming_config.num_samples_per_prompt_rollout
+    args.num_training_steps = args.total_episodes // rollout_size
+    logger.info(
+        "Training duration: total_episodes=%s, rollout_size=%s -> num_training_steps=%s",
+        args.total_episodes,
+        rollout_size,
+        args.num_training_steps,
     )
     args.try_launch_beaker_eval_jobs_on_weka = args.try_launch_beaker_eval_jobs_on_weka and is_beaker_job()
     if args.push_to_hub:
@@ -1254,8 +1258,15 @@ def setup_datasets(
 
     _validate_and_log_dataset_tools(train_dataset, configured_tool_call_names, "train_dataset")
     train_dataset = train_dataset.shuffle(seed=args.seed)
+    # Re-index after shuffle so that positional index == "index" column value.
+    # This invariant is required by accumulate_inference_batches which does
+    # dataset[result.index] (positional lookup using the "index" column value).
+    train_dataset = train_dataset.remove_columns(["index"]).add_column("index", list(range(len(train_dataset))))
 
-    if len(streaming_config.dataset_mixer_eval_list) > 0:
+    if args.local_eval_every <= 0:
+        eval_dataset = None
+        logger.info("In-loop evaluation disabled (local_eval_every=%s)", args.local_eval_every)
+    elif len(streaming_config.dataset_mixer_eval_list) > 0:
         eval_dataset, eval_dataset_stats = get_cached_dataset_tulu_with_statistics(
             dataset_mixer_list=streaming_config.dataset_mixer_eval_list,
             dataset_mixer_list_splits=streaming_config.dataset_mixer_eval_list_splits,
@@ -1274,8 +1285,10 @@ def setup_datasets(
         _validate_and_log_dataset_tools(eval_dataset, configured_tool_call_names, "eval_dataset")
         if streaming_config.shuffle_eval_dataset:
             eval_dataset = eval_dataset.shuffle(seed=args.seed)
+            eval_dataset = eval_dataset.remove_columns(["index"]).add_column("index", list(range(len(eval_dataset))))
     else:
         eval_dataset = None
+        logger.info("No eval dataset (dataset_mixer_eval_list is empty)")
 
     visualize_token(train_dataset[0][INPUT_IDS_PROMPT_KEY], tokenizer)
 
@@ -1745,17 +1758,15 @@ def maybe_evaluate(
         return
 
     try:
-        # timeout 0.01 if this is not the last training step
-        # otherwise, wait to get the last evaluation generations (long timeout just in case)
-        timeout = 0.01 if training_step < args.num_training_steps else 100
         # Use a short timeout on most steps to avoid blocking training.
         # Use a longer timeout when we expect eval results: on steps that are multiples of
-        # local_eval_every (we may have results from the previous eval cycle) and on the last step.
-        # Eval with LLM judge or long generations can take many minutes.
-        # is_expecting_eval_results = (
-        #     training_step % args.local_eval_every == 0 and training_step > args.local_eval_every
-        # ) or training_step >= args.num_training_steps
-        # timeout = args.eval_receive_timeout if is_expecting_eval_results else 0.01
+        # local_eval_every (results from the previous eval cycle) and on the last step.
+        # Eval with LLM judge, code verification, or long generations can take many minutes.
+        is_expecting_eval_results = (
+            training_step % args.local_eval_every == 0 and training_step >= args.local_eval_every
+        ) or training_step >= args.num_training_steps
+        eval_timeout = args.eval_receive_timeout if args.eval_receive_timeout is not None else 600.0
+        timeout = eval_timeout if is_expecting_eval_results else 0.01
 
         # Accumulate evaluation results from all vLLM engines
         eval_result, eval_batch, eval_reward_metrics, _ = accumulate_inference_batches(
@@ -2016,7 +2027,8 @@ def run_training(
         health_check_time = time.perf_counter() - health_check_start
 
         if (
-            training_step % args.local_eval_every == 0
+            args.local_eval_every > 0
+            and training_step % args.local_eval_every == 0
             and eval_data_loader is not None
             and (args.eval_on_step_0 or training_step > 1)
         ):

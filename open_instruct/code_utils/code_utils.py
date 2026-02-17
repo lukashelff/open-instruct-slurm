@@ -1,4 +1,6 @@
 import base64
+import contextlib
+import io
 import json
 import math
 import multiprocessing
@@ -102,19 +104,20 @@ def run_tests_against_program_helper_2(func: str, tests: list[str], shared_resul
         execution_context: dict[str, Any] = {}
         execution_context.update({"__builtins__": __builtins__})
 
-        try:
-            exec(func, execution_context)
-        except Exception:
-            for i in range(len(tests)):
-                shared_results[i] = 0
-            return
-
-        for idx, test in enumerate(tests):
+        with contextlib.redirect_stdout(io.StringIO()):
             try:
-                exec(test, execution_context)
-                shared_results[idx] = 1
+                exec(func, execution_context)
             except Exception:
-                shared_results[idx] = 0
+                for i in range(len(tests)):
+                    shared_results[i] = 0
+                return
+
+            for idx, test in enumerate(tests):
+                try:
+                    exec(test, execution_context)
+                    shared_results[idx] = 1
+                except Exception:
+                    shared_results[idx] = 0
     finally:
         # Restore in child process (though it will terminate anyway)
         partial_undo_reliability_guard()
@@ -128,16 +131,17 @@ def run_individual_test_helper(func: str, test: str, result_array, index: int, r
     try:
         execution_context = {}
         execution_context.update({"__builtins__": __builtins__})
-        try:
-            exec(func, execution_context)
-            start_time = time.time()
-            exec(test, execution_context)
-            end_time = time.time()
-            result_array[index] = 1
-            runtimes_array[index] = end_time - start_time
-        except Exception:
-            result_array[index] = 0
-            runtimes_array[index] = -1.0
+        with contextlib.redirect_stdout(io.StringIO()):
+            try:
+                exec(func, execution_context)
+                start_time = time.time()
+                exec(test, execution_context)
+                end_time = time.time()
+                result_array[index] = 1
+                runtimes_array[index] = end_time - start_time
+            except Exception:
+                result_array[index] = 0
+                runtimes_array[index] = -1.0
     finally:
         # Restore in child process (though it will terminate anyway)
         partial_undo_reliability_guard()
