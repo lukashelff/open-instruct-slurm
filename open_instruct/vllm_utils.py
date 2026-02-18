@@ -1114,11 +1114,22 @@ def create_vllm_engines(
             placement_group_bundle_index=bundle_indices[0],
         )
 
-        # Assign a unique VLLM_DP_MASTER_PORT per engine to avoid EADDRINUSE when many
-        # engines initialize simultaneously (e.g. 48 engines across 6 nodes). vLLM uses
-        # this port for internal distributed communication; without it, port 0 (OS-assigned)
-        # can collide when multiple processes bind at the same time.
+        # Assign unique ports per engine to avoid EADDRINUSE when many engines
+        # initialize simultaneously (e.g. 48 engines across 6 nodes).
+        #
+        # VLLM_DP_MASTER_PORT: used by vLLM for internal data-parallel communication.
+        #   get_open_port() avoids this range, but we must set it so vLLM knows to.
+        #
+        # VLLM_PORT: used by _get_open_port() as a deterministic starting port for
+        #   torch.distributed TCPStore. Without this, each engine calls bind(0) to get
+        #   an OS-assigned ephemeral port and releases it before TCPStore binds — a
+        #   TOCTOU race that causes EADDRINUSE when 8+ engines start on the same node.
+        #   With VLLM_PORT set, _get_open_port() tries sequential ports starting from
+        #   this value, incrementing on conflict, which is race-free.
+        #
+        # We space ports 100 apart per engine to leave room for internal sub-ports.
         vllm_dp_master_port = 29600 + i
+        vllm_port = 30000 + i * 100
 
         vllm_engines.append(
             ray.remote(LLMRayActor)
@@ -1132,6 +1143,7 @@ def create_vllm_engines(
                         "TORCH_CUDA_ARCH_LIST": get_cuda_arch_list(),
                         "RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO": "0",
                         "VLLM_DP_MASTER_PORT": str(vllm_dp_master_port),
+                        "VLLM_PORT": str(vllm_port),
                     }
                 ),
             )

@@ -48,9 +48,9 @@ async def health_check() -> dict[str, str]:
 
 
 @app.post("/test_program")
-async def test_program(request: TestRequest) -> dict[str, list[int] | list[float]]:
+def test_program(request: TestRequest) -> dict[str, list[int] | list[float]]:
+    """Synchronous handler — FastAPI runs this in a thread-pool so the event loop is not blocked."""
     try:
-        # logger.info("Executing tests for program: %s", request.program)
         decoded_tests = decode_tests(request.tests)
         results, runtimes = get_successful_tests_fast(
             program=request.program, tests=decoded_tests, max_execution_time=request.max_execution_time
@@ -62,8 +62,8 @@ async def test_program(request: TestRequest) -> dict[str, list[int] | list[float
 
 
 @app.post("/test_program_stdio")
-async def test_program_stdio(request: TestRequest) -> dict[str, list[int] | list[float]]:
-    # run tests with the stdio format
+def test_program_stdio(request: TestRequest) -> dict[str, list[int] | list[float]]:
+    """Synchronous handler — FastAPI runs this in a thread-pool so the event loop is not blocked."""
     try:
         decoded_tests = decode_tests(request.tests)
         results, runtimes = get_successful_tests_stdio(
