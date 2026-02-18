@@ -52,6 +52,11 @@ echo "=========================================="
 # --- 3. Directories ---
 mkdir -p "$BASE_DIR/logs" "$BASE_DIR/.cache/nltk_data" "$BASE_DIR/.cache/open_instruct_dataset_cache" "$OUTPUT_DIR" "$OUTPUT_DIR/rollouts"
 
+# --- 3a. Load secrets (API keys, tokens) from file if it exists. This file is not in the repo and should be created by each user with their own keys.
+if [ -f "/stage/secrets.env" ]; then
+source /stage/secrets.env
+fi
+
 # --- 3b. Pre-pull container image (avoid 8 nodes racing to build SIF) ---
 SIF_CACHE="$BASE_DIR/.cache/apptainer"
 mkdir -p "$SIF_CACHE"
@@ -72,13 +77,13 @@ APPTAINER_ENV=(
   --env "UV_CACHE_DIR=/stage/.cache/uv"
   --env "HF_HOME=/stage/.cache/huggingface"
   --env "TRITON_CACHE_DIR=/tmp/.cache/triton"
-  --env "HF_TOKEN=HF_TOKEN"
+  --env "HF_TOKEN=$HF_TOKEN"
   --env "HF_HUB_OFFLINE=True"
   --env "NLTK_DATA=/stage/.cache/nltk_data"
   --env "TOKENIZERS_PARALLELISM=FALSE"
   --env "WANDB_ENTITY=helff"
   --env "WANDB_PROJECT=Reward-Shortcut"
-  --env "WANDB_API_KEY=wandb_TOKEN"
+  --env "WANDB_API_KEY=$WANDB_API_KEY"
   --env "RAY_ADDRESS=$RAY_ADDRESS"
   --env "RAY_PORT=$RAY_PORT"
   --env "RAY_DEDUP_LOGS=0"
