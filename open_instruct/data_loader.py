@@ -20,6 +20,7 @@ from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from queue import Empty
 from typing import Any, Literal
 
 import numpy as np
@@ -32,7 +33,7 @@ from ray.util import queue as ray_queue
 from tqdm import tqdm
 from transformers import PreTrainedTokenizer
 
-from open_instruct import data_types, utils
+from open_instruct import data_types, padding_free_collator, utils
 from open_instruct.dataset_transformation import (
     GROUND_TRUTHS_KEY,
     INPUT_IDS_PROMPT_KEY,
@@ -40,9 +41,9 @@ from open_instruct.dataset_transformation import (
     TOOLS_COLUMN_KEY,
     VERIFIER_SOURCE_KEY,
 )
+from open_instruct.environments.tools.utils import EnvStatistics
 from open_instruct.model_utils import Batch
 from open_instruct.rl_utils import PackedSequences, pack_sequences, save_rollout_metadata, save_rollouts_to_disk
-from open_instruct.tools.utils import ToolStatistics
 from open_instruct.utils import combine_reward_metrics, repeat_each
 
 logger = logging.getLogger(__name__)
@@ -83,6 +84,7 @@ class HFDataLoader(data_loader.DataLoaderBase):
         collator: Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None,
         device: torch.device | None = None,
         drop_last: bool = True,
+        fs_local_rank: int | None = None,
     ) -> None:
         """Initialize the HFDataLoader.
 
@@ -99,6 +101,7 @@ class HFDataLoader(data_loader.DataLoaderBase):
             device: Device to move tensors to.
             drop_last: If True, drop the last incomplete batch. If False, pad the last batch
                 with repeated indices to fill a complete batch.
+            fs_local_rank: File system local rank. Defaults to dp_rank when None.
 
         Note:
             The dataset must have an 'index' column for tracking samples across epochs.
@@ -110,7 +113,7 @@ class HFDataLoader(data_loader.DataLoaderBase):
             global_batch_size=batch_size,
             dp_world_size=dp_world_size,
             dp_rank=dp_rank,
-            fs_local_rank=dp_rank,
+            fs_local_rank=fs_local_rank if fs_local_rank is not None else dp_rank,
         )
 
         if "index" not in dataset.column_names:
@@ -136,6 +139,7 @@ class HFDataLoader(data_loader.DataLoaderBase):
         self._automatic_reshuffle = automatic_reshuffle
         self._drop_last = drop_last
         self._excluded_indices: set[int] = set()
+        self._overflow: list[dict[str, Any]] = []
         self._epoch: int = 0
         self._current_iter: Iterator[dict[str, Any]] | None = None
         self._device = device
@@ -167,8 +171,18 @@ class HFDataLoader(data_loader.DataLoaderBase):
             example = self.dataset[i]
             batch_examples.append(example | {"prompt_id": f"{self._epoch}_{example['index']}"})
             if len(batch_examples) == self._per_rank_batch_size:
-                yield to_device(self._collator(batch_examples), self._device)
+                all_examples = self._overflow + batch_examples
+                batch = to_device(self._collator(all_examples), self._device)
+                self._overflow = all_examples[len(batch["index"]) :]
+                yield batch
                 batch_examples = []
+        while self._overflow:
+            batch = to_device(self._collator(self._overflow), self._device)
+            assert len(batch["index"]) > 0, (
+                f"Collator consumed 0 examples from {len(self._overflow)} overflow examples"
+            )
+            self._overflow = self._overflow[len(batch["index"]) :]
+            yield batch
 
     @property
     def total_batches(self) -> int:
@@ -217,12 +231,13 @@ class HFDataLoader(data_loader.DataLoaderBase):
 
         Uses index-based shuffling to avoid copying the dataset.
         """
-        rng = np.random.default_rng(self.seed + epoch)
-        all_indices = np.arange(len(self._full_dataset))
+        generator = torch.Generator()
+        generator.manual_seed(self.seed + epoch)
+        dataset_len = len(self._full_dataset)
+        all_indices = torch.randperm(dataset_len, generator=generator).numpy()
         if self._excluded_indices:
             mask = np.isin(all_indices, list(self._excluded_indices), invert=True)
             all_indices = all_indices[mask]
-        rng.shuffle(all_indices)
 
         global_size = len(all_indices)
         total_batches = global_size // self._batch_size
@@ -267,12 +282,7 @@ class HFDataLoader(data_loader.DataLoaderBase):
         Raises:
             ValueError: If no input_ids tensors are found in the batch.
         """
-        num_tokens = 0
-        for key, value in batch.items():
-            if "input_ids" in key and isinstance(value, torch.Tensor):
-                num_tokens += value.numel()
-        if num_tokens == 0:
-            raise ValueError("Batch contains no input_ids tensors. Cannot compute token count.")
+        num_tokens = padding_free_collator.get_num_tokens(batch)
         return num_tokens * self.dp_world_size
 
 
@@ -370,6 +380,15 @@ class StreamingDataLoaderConfig:
     non_stop_penalty: bool = False
     non_stop_penalty_value: float = 0.0
 
+    # Evolving rubric reward
+    apply_evolving_rubric_reward: bool = False
+    """Whether to generate and apply evolving rubrics for reward computation.
+    When enabled, a rubric buffer is automatically maintained across training steps."""
+    max_active_rubrics: int = 5
+    """Maximum number of active evolving rubrics per query."""
+    cache_evolving_rubric_data_dir: str | None = None
+    """Directory to cache evolving rubric generation data for debugging/analysis. If set, rubric data will be saved."""
+
     # Rollout saving
     save_traces: bool = False
     rollouts_save_path: str = "/weka/oe-adapt-default/allennlp/deletable_rollouts/"
@@ -403,9 +422,12 @@ class StreamingDataLoaderConfig:
         if self.async_steps < 1:
             raise ValueError("`async_steps` must be greater than 0. Fully synchronous training is not supported.")
 
-        assert self.apply_verifiable_reward or self.apply_r1_style_format_reward or self.non_stop_penalty, (
-            "At least one reward must be applied!"
-        )
+        assert (
+            self.apply_verifiable_reward
+            or self.apply_r1_style_format_reward
+            or self.non_stop_penalty
+            or self.apply_evolving_rubric_reward
+        ), "At least one reward must be applied!"
 
         if self.stop_strings is None:
             self.stop_strings = []
@@ -531,10 +553,16 @@ class BatchStatistics:
     total_prompts: int
 
 
+def single_example_collator(examples: list[dict[str, Any]]) -> dict[str, Any]:
+    assert len(examples) == 1, f"Expected 1 example, got {len(examples)}"
+    example = examples[0]
+    return example | {"index": torch.tensor([example["index"]])}
+
+
 def add_prompt_to_generator(
     example: dict[str, Any], epoch_number: int, param_prompt_Q: ray_queue.Queue, generation_config, is_eval: bool
 ) -> None:
-    index = example["index"]
+    index = int(example["index"])
     param_prompt_Q.put(
         data_types.PromptRequest(
             prompt=example[INPUT_IDS_PROMPT_KEY],
@@ -565,6 +593,7 @@ def accumulate_inference_batches(
     training_step: int | None = None,
     verbose: bool = False,
     max_possible_score: float = 1.0,
+    requeue_on_timeout: bool = True,
 ) -> (
     tuple[data_types.GenerationResult, Batch, dict, BatchStatistics]
     | tuple[data_types.ShutdownSentinel | None, None, None, None]
@@ -602,11 +631,22 @@ def accumulate_inference_batches(
         f"[accumulate_inference_batches] Starting to accumulate {num_prompts} prompts, training_step={training_step}"
     )
     num_prompts_sampled = 0
+    collected_results = []  # Track results for potential requeue on timeout
     while num_prompts_sampled < num_prompts:
         logger.info(
             f"[accumulate_inference_batches] Waiting for result {num_prompts_sampled + 1}/{num_prompts} from inference_results_Q"
         )
-        result = inference_results_Q.get(timeout=timeout)
+        try:
+            result = inference_results_Q.get(timeout=timeout)
+        except Empty:
+            if requeue_on_timeout and collected_results:
+                logger.info(
+                    f"[accumulate_inference_batches] Timeout with {len(collected_results)}/{num_prompts} results, requeuing"
+                )
+                for r in collected_results:
+                    inference_results_Q.put(r)
+            raise
+        collected_results.append(result)
         logger.info(
             f"[accumulate_inference_batches] Got result {num_prompts_sampled + 1}/{num_prompts}, type: {type(result).__name__}"
         )
@@ -951,7 +991,7 @@ class DataPreparationActor:
             dp_world_size=1,
             work_dir=work_dir,
             automatic_reshuffle=True,
-            collator=lambda x: x[0],
+            collator=single_example_collator,
         )
 
         self.prepared_data: dict[int, list[data_types.CollatedBatchData]] = {}
@@ -1159,7 +1199,7 @@ class DataPreparationActor:
                     **batch_metrics_prefixed,
                 }
 
-                tool_stats = ToolStatistics(tool_names=self.tool_names)
+                tool_stats = EnvStatistics(tool_names=self.tool_names)
                 excess_calls = result.request_info.excess_tool_calls or [
                     {} for _ in range(len(result.request_info.tool_call_stats))
                 ]

@@ -61,9 +61,9 @@ from vllm.v1.core import kv_cache_utils
 from open_instruct import logger_utils
 from open_instruct.data_types import GenerationResult, PromptRequest, RequestInfo, TokenStatistics, ToolCallStats
 from open_instruct.dataset_transformation import GROUND_TRUTHS_KEY, RAW_PROMPT_KEY, VERIFIER_SOURCE_KEY
+from open_instruct.environments.base import StepResult
+from open_instruct.environments.tools.parsers import ToolParser, create_tool_parser
 from open_instruct.ground_truth_utils import RewardConfig
-from open_instruct.tools.parsers import ToolParser, create_tool_parser
-from open_instruct.tools.utils import ToolOutput
 from open_instruct.utils import ModelDims, get_device_name, ray_get_with_progress
 
 logger = logger_utils.setup_logger(__name__)
@@ -72,6 +72,7 @@ NUM_PREFETCH_WORKERS = 2
 DRAIN_ACTIVE_TASKS_SLEEP_S = 1
 SHOULD_STOP_TIMEOUT_S = 0.1
 INFERENCE_INIT_TIMEOUT_S = 1200
+VLLM_HEALTH_CHECK_TIMEOUT_S = 600.0
 
 
 def model_dims_from_vllm_config(vllm_config: "vllm.config.VllmConfig") -> ModelDims:
@@ -435,7 +436,9 @@ def init_process_group(
 async def _check_health(port: int) -> None:
     async with (
         aiohttp.ClientSession() as session,
-        session.get(f"http://127.0.0.1:{port}/health", timeout=aiohttp.ClientTimeout(total=30.0)) as response,
+        session.get(
+            f"http://127.0.0.1:{port}/health", timeout=aiohttp.ClientTimeout(total=VLLM_HEALTH_CHECK_TIMEOUT_S)
+        ) as response,
     ):
         if response.status != 200:
             raise RuntimeError(f"vLLM server health check failed with status {response.status}")
@@ -948,26 +951,24 @@ async def process_request(actor: LLMRayActor, sub_request_id: str, sampling_para
                 continue
 
             try:
-                tool_result: ToolOutput = await actor.tool_actor_map[tool_call.name].safe_execute.remote(
-                    **tool_call.args
-                )
-            except TypeError as e:
-                # This can happen if the model generated a tool call with missing/wrong arguments
+                tool_result: StepResult = await actor.tool_actor_map[tool_call.name].step.remote(tool_call)
+            except (TypeError, ValueError) as e:
                 error_msg = f"Tool call '{tool_call.name}' failed: {e}. Args received: {tool_call.args}"
                 logger.warning(error_msg)
-                tool_result = ToolOutput(output="", error=error_msg, called=True, timeout=False, runtime=0.0)
+                tool_result = StepResult(result="", metadata={"error": error_msg})
 
-            timeout = timeout or tool_result.timeout
-            tool_error += tool_result.error or ""
-            tool_output += tool_result.output
-            tool_runtime += tool_result.runtime
-            outputs.append(tool_result.output)
+            meta = tool_result.metadata
+            timeout = timeout or meta.get("timeout", False)
+            tool_error += meta.get("error", "")
+            tool_output += tool_result.result
+            tool_runtime += meta.get("runtime", 0.0)
+            outputs.append(tool_result.result)
 
             tool_call_stats.append(
                 ToolCallStats(
                     tool_name=tool_call.name,
-                    success=not tool_result.error and not tool_result.timeout,
-                    runtime=tool_result.runtime,
+                    success=not meta.get("error") and not meta.get("timeout", False),
+                    runtime=meta.get("runtime", 0.0),
                 )
             )
 
@@ -1075,6 +1076,7 @@ def create_vllm_engines(
     reward_config: RewardConfig | None = None,
     train_dataset=None,
     eval_dataset=None,
+    vllm_dtype: str = "bfloat16",
 ) -> list[ray.actor.ActorHandle]:
     # Convert max_tool_calls to a dict mapping tool end strings to their limits
     vllm_engines = []
@@ -1155,7 +1157,7 @@ def create_vllm_engines(
                 worker_extension_cls="open_instruct.vllm_utils_workerwrap.WorkerWrap",
                 tensor_parallel_size=tensor_parallel_size,
                 enforce_eager=enforce_eager,
-                dtype="bfloat16",
+                dtype=vllm_dtype,
                 seed=seed + i,
                 distributed_executor_backend=distributed_executor_backend,
                 enable_prefix_caching=enable_prefix_caching,
