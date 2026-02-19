@@ -119,8 +119,8 @@ GRPO_ARGS="--exp_name $JOB_NAME \
   --dataset_mixer_list_splits train \
   --dataset_mixer_eval_list allenai/Dolci-Think-RL-7B 8 AIML-TUDA/SLR-Bench:v1-All 4 \
   --dataset_mixer_eval_list_splits train \
-  --max_prompt_token_length 2048 \
-  --response_length 32768 \
+  --max_prompt_token_length 5000 \
+  --response_length 30000 \
   --pack_length 35840 \
   --model_name_or_path allenai/Olmo-3-7B-Think-DPO \
   --chat_template_name olmo_thinker \
