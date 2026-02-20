@@ -17,7 +17,7 @@ BASE_DIR="${BASE_DIR:?BASE_DIR must be set}"
 CODE_API_PORT="${CODE_API_PORT:?CODE_API_PORT must be set}"
 CODE_SERVER_CPUS="${CODE_SERVER_CPUS:-96}"
 API_BASE_PORT=9100  # internal ports: 9100, 9101, ..., 9100+N-1
-LOG_FILE="$BASE_DIR/logs/code_api/${JOB_NAME}_${SLURM_JOB_ID}.log"
+LOG_FILE="$BASE_DIR/logs/${JOB_NAME}_${SLURM_JOB_ID}/code_api.log"
 
 echo "=========================================="
 echo "Code API setup (SLR)"

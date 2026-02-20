@@ -33,6 +33,7 @@ dependencies = [
     "immutabledict==1.2.0",
     "flash-attn>=2.8.3; platform_system != 'Darwin' and platform_machine != 'aarch64'",
     "liger-kernel>=0.5.4; platform_system != 'Darwin'",
+    "evaluate>=0.4.0",
     "fastapi>=0.100.0",
     "uvicorn>=0.20.0",
     "mcp>=1.9.0",
@@ -79,17 +80,16 @@ code = [
     "pydantic>=2.0.0",
     "requests>=2.28.0",
 ]
-# Slurm OE eval: standard benchmarks (MMLU, GSM8K, BBH, etc.) without Beaker.
+# Slurm OE eval: OLMo-paper benchmarks (MMLU, BBH, GPQA, AGIEval, AIME24/25, IFEval) via vLLM backend.
+# vllm is already a core dependency; lm-eval's vllm model backend picks it up automatically.
 # Install with: uv sync --extra lm-eval
 lm-eval = [
-    "lm-eval[hf]>=0.4.0",
+    "lm-eval[vllm]>=0.4.0",
 ]
 dr-tulu = [
     "dr_agent",
 ]
-slr_bench = [
-    "evaluate>=0.4.0",
-]
+slr_bench = []
 
 [tool.uv]
 preview = true

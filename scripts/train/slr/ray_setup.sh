@@ -22,12 +22,12 @@ PROC_ID="${SLURM_PROCID:-0}"
 
 
 # --- Common setup ---
-ray stop --force 2>/dev/null || true
+uv run ray stop --force 2>/dev/null || true
 
 if [ "$PROC_ID" = "$RAY_HEAD_PROCID" ]; then
     # --- Head node ---
     echo "[ray_setup] Starting Ray head (SLURM_PROCID=$PROC_ID, port=$RAY_PORT)"
-    ray start --head --port="$RAY_PORT" --dashboard-host=0.0.0.0
+    uv run ray start --head --port="$RAY_PORT" --dashboard-host=0.0.0.0
     /usr/bin/sleep 5
     echo "[ray_setup] Ray head started."
 
@@ -44,7 +44,7 @@ else
     # Trap signals so workers exit 0 when head shuts down (prevents Slurm FAILED status)
     cleanup() {
         echo "[ray_setup] Worker $PROC_ID: cleanup — stopping Ray"
-        ray stop --force 2>/dev/null || true
+        uv run ray stop --force 2>/dev/null || true
         trap - TERM INT HUP EXIT
         exit 0
     }
@@ -55,11 +55,11 @@ else
     echo "[ray_setup] Worker $PROC_ID: waiting ${DELAY}s before joining cluster"
     /usr/bin/sleep "$DELAY"
 
-    ray start --address="$RAY_ADDRESS" --dashboard-host=0.0.0.0
+    uv run ray start --address="$RAY_ADDRESS" --dashboard-host=0.0.0.0
     echo "[ray_setup] Worker $PROC_ID: joined cluster, monitoring head at $RAY_ADDRESS"
 
     # Poll head availability. Exit 0 when head is gone.
-    while ray status --address="$RAY_ADDRESS" >/dev/null 2>&1; do
+    while uv run ray status --address="$RAY_ADDRESS" >/dev/null 2>&1; do
         /usr/bin/sleep 5
     done
     echo "[ray_setup] Worker $PROC_ID: head unreachable, exiting."
