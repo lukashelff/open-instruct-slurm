@@ -1,0 +1,76 @@
+name: grpo-single-gpu-test
+description: "Single GPU GRPO test: minimal training to verify the pipeline works"
+workspace: P_HessianEuropeLLM
+project: sRL
+
+bind_mounts:
+  - container_path: /pfss/mlde/workspaces/
+    host_path: /pfss/mlde/workspaces/
+    propagation: rprivate
+    read_only: false
+  - container_path: /pfss/mlde/users/
+    host_path: /pfss/mlde/users/
+  - container_path: /pfss/mlde/mlde_ext
+    host_path: /pfss/mlde/mlde_ext
+    propagation: rprivate
+    read_only: false
+  - container_path: /etc/hosts
+    host_path: /etc/hosts
+    propagation: rprivate
+    read_only: true
+
+debug: false
+
+environment:
+  add_capabilities:
+    - IPC_LOCK
+  environment_variables:
+    # --- Paths ---
+    - TMPDIR=/tmp
+    - HOME=/pfss/mlde/workspaces/mlde_wsp_P_HessianEuropeLLM/soofi_ai
+    - BASE_DIR=/pfss/mlde/workspaces/mlde_wsp_P_HessianEuropeLLM/soofi_ai/open-instruct
+    - OUTPUT_DIR=/pfss/mlde/workspaces/mlde_wsp_P_HessianEuropeLLM/soofi_ai/open-instruct/output/grpo-single-gpu-test
+    - JOB_NAME=grpo-single-gpu-test
+    - UV_CACHE_DIR=/pfss/mlde/workspaces/mlde_wsp_P_HessianEuropeLLM/soofi_ai/.cache/uv
+    - HF_HOME=/pfss/mlde/workspaces/mlde_wsp_P_HessianEuropeLLM/soofi_ai/.cache/huggingface
+    - TRITON_CACHE_DIR=/tmp/.cache/triton
+    - NLTK_DATA=/pfss/mlde/workspaces/mlde_wsp_P_HessianEuropeLLM/soofi_ai/.cache/nltk_data
+    # --- Tokens (override via secrets.env on shared fs) ---
+    - TOKENIZERS_PARALLELISM=FALSE
+    - HF_HUB_ENABLE_HF_TRANSFER=1
+    # --- NCCL ---
+    - NCCL_CUMEM_ENABLE=0
+    - NCCL_DEBUG=ERROR
+    # --- vLLM ---
+    - VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
+    - VLLM_ALLOW_INSECURE_SERIALIZATION=1
+    - VLLM_LOGGING_LEVEL=WARNING
+    # --- W&B ---
+    - WANDB_ENTITY=helff
+    - WANDB_PROJECT=Reward-Shortcut
+    # --- Ray ---
+    - RAY_PORT=6379
+    - RAY_DEDUP_LOGS=0
+  force_pull_image: false
+  image:
+    cuda: helffml/open_instruct_dev:det
+    cpu: helffml/open_instruct_dev:det
+
+resources:
+  devices:
+    - container_path: /dev/infiniband/
+      host_path: /dev/infiniband/
+      mode: mrw
+  resource_pool: 42_Compute
+  slots_per_trial: 1
+  shm_size: 1500000000
+
+searcher:
+  name: single
+  max_length:
+    epochs: 1
+  metric: reward
+
+max_restarts: 0
+
+entrypoint: bash scripts/train/slr_determined/single_gpu_grpo.sh

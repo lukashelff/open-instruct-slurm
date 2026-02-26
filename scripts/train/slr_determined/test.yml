@@ -1,0 +1,55 @@
+name: smollm2_2b_similar_random_40b_en_v5
+description: train-smollm2
+workspace: P_HessianEuropeLLM
+project: Multilingual_data_curation
+bind_mounts:
+  - container_path: /pfss/mlde/workspaces/
+    host_path: /pfss/mlde/workspaces/
+    propagation: rprivate
+    read_only: false
+  - container_path: /pfss/mlde/users/
+    host_path: /pfss/mlde/users/
+  - container_path: /pfss/mlde/mlde_ext
+    host_path: /pfss/mlde/mlde_ext
+    propagation: rprivate
+    read_only: false
+  - container_path: /etc/hosts
+    host_path: /etc/hosts
+    propagation: rprivate
+    read_only: true
+debug: false
+environment:
+  add_capabilities:
+    - IPC_LOCK
+  drop_capabilities: null
+  environment_variables:
+    - TMPDIR=/pfss/mlde/workspaces/mlde_wsp_P_HessianEuropeLLM/soofi_ai/tmp
+    - HOME=/pfss/mlde/workspaces/mlde_wsp_P_HessianEuropeLLM/soofi_ai/
+    - CUDA_DEVICE_MAX_CONNECTIONS=1
+    - HF_TRUST_REMOTE_CODE=TRUE
+    - TOKENIZERS_PARALLELISM=FALSE
+  force_pull_image: false
+  image:
+    cuda: mkrausio/ml_research:uv42
+    cpu: mkrausio/ml_research:uv42
+  pod_spec: null
+  ports: null
+  proxy_ports: null
+pbs: {}
+resources:
+  devices:
+    - container_path: /dev/infiniband/
+      host_path: /dev/infiniband/
+      mode: mrw
+  resource_pool: 42_Compute
+  shm_size: 1500000000
+  slots_per_trial: 64
+  weight: 1
+slurm: {}
+searcher:
+  name: single
+  max_length:
+    epochs: 1
+  metric: val/loss
+max_restarts: 0
+entrypoint: cd /pfss/mlde/workspaces/mlde_wsp_P_HessianEuropeLLM/soofi_ai/clustering/evaluation && . /pfss/mlde/workspaces/mlde_wsp_P_HessianEuropeLLM/soofi_ai/clustering/evaluation/nanotron_v2/bin/activate && python3 -m determined.launch.torch_distributed python3 run_train_parquet.py --config-file ./configs/config_smollm2_2b_en_sequence_random.yaml

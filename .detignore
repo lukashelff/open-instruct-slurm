@@ -1,0 +1,39 @@
+# Heavy directories not needed for Determined experiments
+.git/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Data/outputs/logs
+output/
+logs/
+wandb/
+data/
+checkpoints/
+results/
+models/
+tmp/
+trash/
+
+# Build artifacts
+build/
+dist/
+site/
+*.so
+
+# Large files
+*.tfevents.*
+*.jsonl
+*.sif
+
+# Internal tools not needed in context
+oe-eval-internal/
+human_eval/
+decontamination/
+assets/
+docs/
+
+# Secrets (should use env vars instead)
+secrets.env

@@ -1,0 +1,25 @@
+# Dockerfile for Determined AI cluster.
+# Extends the base open-instruct image with pip + determined.
+# The Determined agent requires pip and its Python harness in the container.
+#
+# Build:
+#   docker build -t helffml/open_instruct_dev:det -f Dockerfile.determined .
+#
+# Push:
+#   docker push helffml/open_instruct_dev:det
+
+FROM helffml/open_instruct_dev:slr
+
+# Install pip for system python (Determined needs to find pip) and
+# install determined into the uv venv (which is on PATH first).
+# Also fix permissions: Determined runs as workspace agent user (not root),
+# so /stage (workdir, .venv, etc.) must be world-readable/executable.
+RUN apt-get update && apt-get install -y --no-install-recommends python3-pip && \
+    rm -rf /var/lib/apt/lists/* && \
+    uv pip install --python /stage/.venv/bin/python determined==0.35.0 && \
+    python3 -c "import determined; print(f'determined {determined.__version__} installed')" && \
+    chmod -R a+rX /stage && \
+    # .venv/bin/python3 is a symlink into /root/.local/share/uv/python/...
+    # We must make /root itself traversable (a+x) so non-root users can follow the chain.
+    chmod a+rx /root && \
+    chmod -R a+rX /root/.local 2>/dev/null || true
