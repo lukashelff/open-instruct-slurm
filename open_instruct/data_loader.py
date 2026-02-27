@@ -35,6 +35,7 @@ from transformers import PreTrainedTokenizer
 
 from open_instruct import data_types, padding_free_collator, utils
 from open_instruct.dataset_transformation import (
+    ENV_CONFIG_KEY,
     GROUND_TRUTHS_KEY,
     INPUT_IDS_PROMPT_KEY,
     RAW_PROMPT_KEY,
@@ -325,7 +326,7 @@ class StreamingDataLoaderConfig:
 
     # Dataset
     dataset_mixer_list: list[str] = field(default_factory=lambda: ["ai2-adapt-dev/rlvr_gsm8k_zs", "1.0"])
-    dataset_mixer_eval_list: list[str] = field(default_factory=lambda: ["ai2-adapt-dev/rlvr_gsm8k_zs", "1.0"])
+    dataset_mixer_eval_list: list[str] = field(default_factory=list)
     dataset_mixer_list_splits: list[str] = field(default_factory=lambda: ["train"])
     dataset_mixer_eval_list_splits: list[str] = field(default_factory=lambda: ["test"])
     dataset_transform_fn: list[str] = field(
@@ -336,7 +337,6 @@ class StreamingDataLoaderConfig:
     dataset_config_hash: str | None = None
     dataset_config_eval_hash: str | None = None
     dataset_skip_cache: bool = False
-    shuffle_eval_dataset: bool = False
     system_prompt_override_file: str | None = None
 
     # Generation
@@ -353,6 +353,10 @@ class StreamingDataLoaderConfig:
     apply_verifiable_reward: bool = True
     verification_reward: float = 10.0
     remap_verifier: str | None = None
+
+    # Reward aggregation
+    reward_aggregator: Literal["last", "sum"] = "last"
+    """How to combine per-turn rewards: 'last' (use last turn reward) or 'sum' (sum all rewards across turns)."""
 
     # LLM judge verifier
     llm_judge_model: str = "openai/gpt-4o-mini"
@@ -560,9 +564,27 @@ def single_example_collator(examples: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def add_prompt_to_generator(
-    example: dict[str, Any], epoch_number: int, param_prompt_Q: ray_queue.Queue, generation_config, is_eval: bool
+    example: dict[str, Any],
+    epoch_number: int,
+    param_prompt_Q: ray_queue.Queue,
+    generation_config,
+    is_eval: bool,
+    base_env_config: dict | None = None,
 ) -> None:
     index = int(example["index"])
+
+    # Merge base env_config with per-sample env_config.
+    # 1. Sample has env_config -> merge with base (sample overrides base)
+    # 2. Sample has no env_config but base has env_name -> use base as-is
+    # 3. Neither -> None (non-env sample)
+    env_config = None
+    sample_env_config = example.get(ENV_CONFIG_KEY)
+    if sample_env_config is not None:
+        env_config = dict(base_env_config) if base_env_config else {}
+        env_config.update(sample_env_config)
+    elif base_env_config and base_env_config.get("env_name"):
+        env_config = dict(base_env_config)
+
     param_prompt_Q.put(
         data_types.PromptRequest(
             prompt=example[INPUT_IDS_PROMPT_KEY],
@@ -571,6 +593,7 @@ def add_prompt_to_generator(
             prompt_id=f"{epoch_number}_{index}",
             is_eval=is_eval,
             active_tools=example.get(TOOLS_COLUMN_KEY),
+            env_config=env_config,
         )
     )
 
@@ -594,6 +617,7 @@ def accumulate_inference_batches(
     verbose: bool = False,
     max_possible_score: float = 1.0,
     requeue_on_timeout: bool = True,
+    base_env_config: dict | None = None,
 ) -> (
     tuple[data_types.GenerationResult, Batch, dict, BatchStatistics]
     | tuple[data_types.ShutdownSentinel | None, None, None, None]
@@ -677,7 +701,14 @@ def accumulate_inference_batches(
             assert iter_dataloader is not None
             assert param_prompt_Q is not None
             example = next(iter_dataloader)
-            add_prompt_to_generator(example, iter_dataloader._epoch, param_prompt_Q, generation_config, is_eval=False)
+            add_prompt_to_generator(
+                example,
+                iter_dataloader._epoch,
+                param_prompt_Q,
+                generation_config,
+                is_eval=False,
+                base_env_config=base_env_config,
+            )
 
         for i in range(len(result.finish_reasons)):
             if result.finish_reasons[i] == "stop" and len(result.responses[i]) == 0:
@@ -964,6 +995,7 @@ class DataPreparationActor:
         run_name: str,
         model_name: str | None,
         initial_state: dict | None = None,
+        base_env_config: dict | None = None,
     ):
         self.inference_results_Q = inference_results_Q
         self.param_prompt_Q = param_prompt_Q
@@ -982,6 +1014,7 @@ class DataPreparationActor:
         self.tool_names = tool_names
         self.run_name = run_name
         self.model_name = model_name
+        self.base_env_config = base_env_config
 
         self.iter_dataloader = HFDataLoader(
             dataset=dataset,
@@ -997,6 +1030,7 @@ class DataPreparationActor:
         self.prepared_data: dict[int, list[data_types.CollatedBatchData]] = {}
         self.metrics: dict[int, dict] = {}
         self.current_prepared_step = -1
+        self._last_consumed_step = -1
         self.lock = threading.Lock()
         self.shutdown_requested = False
         self.training_step = 0
@@ -1027,11 +1061,20 @@ class DataPreparationActor:
                 self.param_prompt_Q,
                 self.generation_config,
                 is_eval=False,
+                base_env_config=self.base_env_config,
             )
 
         for step in range(self.training_step, self.num_training_steps):
             if self.shutdown_requested:
                 return
+
+            while step - self._last_consumed_step > self.config.async_steps:
+                if self.shutdown_requested:
+                    return
+                logger.info(
+                    f"[DataPreparationActor] Step {step}: waiting for step {self._last_consumed_step + self.config.async_steps} to be consumed. Consider increasing training compute."
+                )
+                time.sleep(0.1)
 
             logger.info(
                 f"[DataPreparationActor] Step {step}: calling accumulate_inference_batches for {self.global_batch_size} prompts"
@@ -1053,6 +1096,7 @@ class DataPreparationActor:
                 training_step=step,
                 verbose=self.verbose,
                 max_possible_score=self.config.max_possible_score,
+                base_env_config=self.base_env_config,
             )
             logger.info(
                 f"[DataPreparationActor] Step {step}: accumulate_inference_batches returned, result type: {type(result).__name__}"
@@ -1200,11 +1244,8 @@ class DataPreparationActor:
                 }
 
                 tool_stats = EnvStatistics(tool_names=self.tool_names)
-                excess_calls = result.request_info.excess_tool_calls or [
-                    {} for _ in range(len(result.request_info.tool_call_stats))
-                ]
-                for rollout_stats, excess in zip(result.request_info.tool_call_stats, excess_calls):
-                    tool_stats.add_rollout(rollout_stats, excess)
+                for rollout_stats in result.request_info.tool_call_stats:
+                    tool_stats.add_rollout(rollout_stats)
                 step_metrics.update(tool_stats.compute_metrics())
 
                 assert result.token_statistics is not None
@@ -1230,6 +1271,7 @@ class DataPreparationActor:
                 if step <= self.current_prepared_step:
                     batch_data = self.prepared_data[step][rank]
                     result = {"batch": batch_data, "metrics": self.metrics[step]}
+                    self._last_consumed_step = max(self._last_consumed_step, step)
                     self._cleanup_old_steps(step)
                     logger.info(
                         f"[DataPreparationActor.get_data] rank={rank} got data for step={step} after {wait_count} waits"
