@@ -748,6 +748,9 @@ class LMJudgeVerifier(VerifierFunction):
                         acompletion_kwargs["api_base"] = api_base
                     if api_key is not None:
                         acompletion_kwargs["api_key"] = api_key
+                    acompletion_kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
+                    # Force JSON output from vLLM-hosted judges to reduce parse failures
+                    acompletion_kwargs["response_format"] = {"type": "json_object"}
                 response = await acompletion(**acompletion_kwargs)
                 reasoning, score = self.parse_completion(response)
                 cost = self.get_cost(response, self.verifier_config.llm_judge_model)
