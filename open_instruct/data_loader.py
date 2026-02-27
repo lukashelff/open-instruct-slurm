@@ -376,9 +376,9 @@ class StreamingDataLoaderConfig:
     # Max length verifier
     max_length_verifier_max_length: int = 32768
 
-    # SLR-Bench verifier (isomorphic vs flawed judge)
-    slr_judge_type: Literal["isomorphic", "flawed"] = "isomorphic"
-    """Which SLR judge to use: 'isomorphic' (PrivateVerifier) or 'flawed' (PublicVerifier). Non-isomorphic setups use 'flawed'."""
+    # SLR-Bench verifier
+    slr_reward: Literal["isomorphic", "base"] = "isomorphic"
+    """Which SLR judge score to use for training reward: 'isomorphic' or 'base'. Both always run and are tracked in wandb."""
 
     # Non stop penalty
     non_stop_penalty: bool = False

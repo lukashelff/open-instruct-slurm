@@ -53,6 +53,7 @@ logging.getLogger("cost_calculator").setLevel(logging.WARNING)
 # Warning: debug mode may log API keys; use only in safe environments.
 if os.environ.get("LITELLM_DEBUG", "").strip() in ("1", "true", "True", "yes"):
     from litellm import _turn_on_debug
+
     _turn_on_debug()
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
@@ -102,10 +103,10 @@ class CodeVerifierConfig(VerifierConfig):
 
 @dataclasses.dataclass
 class SLRBenchVerifierConfig(VerifierConfig):
-    """Config for SLR-Bench verifier. Use slr_judge_type to switch between isomorphic and flawed judges."""
+    """Config for SLR-Bench verifier. Always runs both isomorphic and base judges for tracking."""
 
-    slr_judge_type: str = "isomorphic"
-    """Which SLR judge to use: 'isomorphic' (PrivateVerifier.py) or 'flawed' (PublicVerifier.py)."""
+    slr_reward: str = "isomorphic"
+    """Which SLR judge score to use for training reward: 'isomorphic' or 'base'. Both always run and are tracked."""
 
 
 @dataclasses.dataclass
@@ -113,6 +114,8 @@ class VerificationResult:
     score: float
     cost: float = 0.0
     reasoning: str | None = None
+    extra_scores: dict[str, float] | None = None
+    """Optional dict of additional scores for tracking (not used for training reward)."""
 
 
 @dataclasses.dataclass
@@ -1231,29 +1234,26 @@ class SLRBenchVerifier(VerifierFunction):
 
     def __init__(self, verifier_config: SLRBenchVerifierConfig) -> None:
         super().__init__("slr_bench", verifier_config=verifier_config, weight=1.0)
-        self._metric = (
+        self._metrics: dict[str, Any] | None = (
             None  # loaded lazily on first __call__ to avoid polluting sys.modules before Ray actors are created
         )
 
-    def _get_metric(self):
-        """Lazy-load the evaluate metric on first use (not in __init__).
+    def _get_metrics(self) -> dict[str, Any]:
+        """Lazy-load BOTH evaluate metrics (isomorphic + base) on first use.
 
         evaluate.load() registers dynamic 'evaluate_modules' in sys.modules.
         If that happens before Ray creates LLMRayActors, Ray serialization fails
         on workers with 'No module named evaluate_modules'.
         """
-        if self._metric is None:
+        if self._metrics is None:
             from evaluate import load  # noqa: PLC0415
 
             root_dir = os.path.dirname(os.path.abspath(__file__))
-            judge_type = (getattr(self.verifier_config, "slr_judge_type", "isomorphic") or "isomorphic").lower()
-            # Flawed = PublicVerifier, isomorphic = PrivateVerifier
-            if judge_type == "flawed":
-                judge_path = os.path.join(root_dir, "slr", "PublicVerifier.py")
-            else:
-                judge_path = os.path.join(root_dir, "slr", "PrivateVerifier.py")
-            self._metric = load(judge_path)
-        return self._metric
+            self._metrics = {
+                "isomorphic": load(os.path.join(root_dir, "slr", "PrivateVerifier.py")),
+                "base": load(os.path.join(root_dir, "slr", "PublicVerifier.py")),
+            }
+        return self._metrics
 
     @staticmethod
     def _extract_prolog_rule(prediction: str) -> str:
@@ -1344,14 +1344,11 @@ class SLRBenchVerifier(VerifierFunction):
         self, tokenized_prediction: list[int], prediction: str, label: str | dict, query: str | None = None
     ) -> VerificationResult:
         """
-        Label comes from: dataset row key GROUND_TRUTHS_KEY (see dataset_transformation).
-        For SLR-Bench it is set by slr_bench_prepare_v1; rlvr_tokenize_v3 wraps it in a list.
-        apply_verifiable_reward (this module) zips ground_truth_list with dataset_list and
-        passes each element as label=gt. So label is expected to be a single dict with
-        "validation_program" (str) and "evaluation_config" (dict with positive_predicate, negative_predicate).
+        Run BOTH isomorphic and base judges, return the selected one as the training score,
+        and track both in extra_scores for wandb logging.
         """
         if not prediction:
-            return VerificationResult(score=0.0)
+            return VerificationResult(score=0.0, extra_scores={"slr_bench_isomorphic": 0.0, "slr_bench_base": 0.0})
         ref = label
         if isinstance(ref, str):
             try:
@@ -1364,30 +1361,42 @@ class SLRBenchVerifier(VerifierFunction):
                 type(ref).__name__,
                 ref,
             )
-            return VerificationResult(score=0.0)
+            return VerificationResult(score=0.0, extra_scores={"slr_bench_isomorphic": 0.0, "slr_bench_base": 0.0})
+
         rule = self._extract_prolog_rule(prediction)
-        try:
-            metric = self._get_metric()
-            # Use _compute directly to avoid evaluate Module.add_batch path where
-            # selected_feature_format can be None for locally loaded metrics (TypeError).
-            result = metric._compute(predictions=[rule], references=[ref])
-        except Exception as e:
-            logger.warning("SLRBenchVerifier metric failed: %s", e, exc_info=True)
-            return VerificationResult(score=0.0)
-        if result is None:
-            logger.warning("SLRBenchVerifier: metric._compute() returned None.")
-            return VerificationResult(score=0.0)
-        try:
-            accuracy = result["accuracy"]
-            partial_score = result["partial_score"]
-            syntax_score = result["syntax_score"]
-            rule_simplicity_bonus = self.get_rule_simplicity_bonus(rule)
-            # Reward formula (clamped to [0, 1]): R = 2·accuracy + partial_score^6 + 0.2·syntax + 0.2·simplicity
-            score = self.compute_reward(accuracy, partial_score, syntax_score, rule_simplicity_bonus)
-        except (TypeError, ValueError) as e:
-            logger.warning("SLRBenchVerifier could not read score from result %s: %s", result, e)
-            return VerificationResult(score=0.0)
-        return VerificationResult(score=min(1.0, max(0.0, score)))
+        rule_simplicity_bonus = self.get_rule_simplicity_bonus(rule)
+        metrics_dict = self._get_metrics()
+
+        judge_scores: dict[str, float] = {}
+        for judge_name, metric in metrics_dict.items():
+            try:
+                # Use _compute directly to avoid evaluate Module.add_batch path where
+                # selected_feature_format can be None for locally loaded metrics (TypeError).
+                result = metric._compute(predictions=[rule], references=[ref])
+            except Exception as e:
+                logger.warning("SLRBenchVerifier %s metric failed: %s", judge_name, e, exc_info=True)
+                judge_scores[judge_name] = 0.0
+                continue
+            if result is None:
+                logger.warning("SLRBenchVerifier %s: metric._compute() returned None.", judge_name)
+                judge_scores[judge_name] = 0.0
+                continue
+            try:
+                accuracy = result["accuracy"]
+                partial_score = result["partial_score"]
+                syntax_score = result["syntax_score"]
+                judge_scores[judge_name] = self.compute_reward(
+                    accuracy, partial_score, syntax_score, rule_simplicity_bonus
+                )
+            except (TypeError, ValueError) as e:
+                logger.warning("SLRBenchVerifier %s could not read score from result %s: %s", judge_name, result, e)
+                judge_scores[judge_name] = 0.0
+
+        reward_judge = (getattr(self.verifier_config, "slr_reward", "isomorphic") or "isomorphic").lower()
+        selected_score = min(1.0, max(0.0, judge_scores.get(reward_judge, 0.0)))
+        extra_scores = {f"slr_bench_{k}": min(1.0, max(0.0, v)) for k, v in judge_scores.items()}
+
+        return VerificationResult(score=selected_score, extra_scores=extra_scores)
 
     @classmethod
     def get_config_class(cls) -> type:
@@ -1520,6 +1529,12 @@ async def apply_verifiable_reward(
         response_per_func_rewards[response_idx][dataset] = (
             response_per_func_rewards[response_idx].get(dataset, 0) + weighted_reward
         )
+
+        # Collect extra tracking scores (e.g., both SLR judges)
+        if hasattr(result, "extra_scores") and result.extra_scores:
+            for key, val in result.extra_scores.items():
+                response_per_func_rewards[response_idx].setdefault(key, 0.0)
+                response_per_func_rewards[response_idx][key] += reward_mult * val * reward_weight
 
     return response_rewards, response_per_func_rewards
 

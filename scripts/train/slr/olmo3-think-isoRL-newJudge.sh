@@ -8,7 +8,7 @@
 #   - Judge node runs vLLM in the official vLLM container (latest model support)
 #   - All other nodes (+ code API on judge) use the open_instruct container
 #
-#SBATCH --job-name=RLVR-Isomorphic
+#SBATCH --job-name=RLVR-soofi-Olmo-IsomorphicRL
 #SBATCH --partition=all
 #SBATCH --nodes=8
 #SBATCH --gpus-per-node=8
