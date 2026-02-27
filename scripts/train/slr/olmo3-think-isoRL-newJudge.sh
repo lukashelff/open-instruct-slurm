@@ -16,8 +16,8 @@
 #SBATCH --cpus-per-task=112
 #SBATCH --mem=0
 #SBATCH --time=100:00:00
-#SBATCH --output=logs/%x_%j.out
-#SBATCH --error=logs/%x_%j.err
+#SBATCH --output=logs/%x_%j/output.out
+#SBATCH --error=logs/%x_%j/error.err
 #SBATCH --qos=normal
 #SBATCH --open-mode=append
 #SBATCH --exclude=cn13,cn06,cn05
