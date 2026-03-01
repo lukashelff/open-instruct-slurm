@@ -748,8 +748,15 @@ class LMJudgeVerifier(VerifierFunction):
                     if api_key is not None:
                         acompletion_kwargs["api_key"] = api_key
                     acompletion_kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
-                    # Force JSON output from vLLM-hosted judges to reduce parse failures
-                    acompletion_kwargs["response_format"] = {"type": "json_object"}
+                    # NOTE: We intentionally do NOT set response_format=json_object here.
+                    # Grammar-constrained JSON decoding in vLLM causes two failure modes:
+                    # 1. When the policy output contains special chars (", \, etc.), the constraint
+                    #    forces the judge to escape every character inside the REASONING string,
+                    #    exhausting the max_tokens budget before "SCORE" is ever written.
+                    # 2. Fighting the grammar constraint against natural generation causes
+                    #    repetitive/degenerate REASONING text.
+                    # Instead, extract_json_score_with_fallback uses a robust regex to find
+                    # the SCORE even in malformed JSON output.
                 response = await acompletion(**acompletion_kwargs)
                 reasoning, score = self.parse_completion(response)
                 cost = self.get_cost(response, self.verifier_config.llm_judge_model)
