@@ -10,6 +10,7 @@
 #     LLM_JUDGE_NUM_ENGINES - tensor parallel size / number of GPUs
 #   Optional env vars:
 #     LLM_JUDGE_MAX_MODEL_LEN  - max context length (default: 32768)
+#     LLM_JUDGE_USE_UV         - "true" to use `uv run vllm`, "false" for bare `vllm` (default: "true")
 #     LLM_JUDGE_EXTRA_ARGS     - additional vllm serve arguments (default: "")
 #     LLM_JUDGE_LOG_FILE       - log file path (default: $BASE_DIR/logs/judge/judge.log)
 
@@ -22,7 +23,7 @@ LLM_JUDGE_NUM_ENGINES="${LLM_JUDGE_NUM_ENGINES:?LLM_JUDGE_NUM_ENGINES must be se
 LLM_JUDGE_MAX_MODEL_LEN="${LLM_JUDGE_MAX_MODEL_LEN:-32768}"
 LLM_JUDGE_EXTRA_ARGS="${LLM_JUDGE_EXTRA_ARGS:-}"
 BASE_DIR="${BASE_DIR:-.}"
-LLM_JUDGE_LOG_FILE="${LLM_JUDGE_LOG_FILE:-${BASE_DIR}/logs/judge/${JOB_NAME}_${SLURM_JOB_ID}.log}"
+LLM_JUDGE_LOG_FILE="${LLM_JUDGE_LOG_FILE:-${BASE_DIR}/logs/${JOB_NAME}_${SLURM_JOB_ID}/judge.log}"
 
 echo "=========================================="
 echo "LLM Judge setup (SLR)"
@@ -41,9 +42,20 @@ JUDGE_GPUS=$(seq -s, 0 $((LLM_JUDGE_NUM_ENGINES - 1)))
 
 echo "[judge] Starting vLLM serve on GPUs: $JUDGE_GPUS"
 
+# Use `uv run vllm` (open_instruct container) or bare `vllm` (e.g. official vLLM container).
+# Default: true. Set LLM_JUDGE_USE_UV=false when running in a standalone vLLM container
+# (apptainer inherits host PATH, so `command -v uv` is unreliable for auto-detection).
+LLM_JUDGE_USE_UV="${LLM_JUDGE_USE_UV:-true}"
+if [ "$LLM_JUDGE_USE_UV" = "true" ]; then
+  VLLM_CMD="uv run vllm"
+else
+  VLLM_CMD="vllm"
+fi
+echo "[judge] Using command: $VLLM_CMD"
+
 # Launch vLLM in the background so we can wait for it
 CUDA_VISIBLE_DEVICES="$JUDGE_GPUS" \
-  uv run vllm serve "$LLM_JUDGE_MODEL" \
+  $VLLM_CMD serve "$LLM_JUDGE_MODEL" \
     --host 0.0.0.0 \
     --port "$LLM_JUDGE_PORT" \
     --tensor-parallel-size "$LLM_JUDGE_NUM_ENGINES" \

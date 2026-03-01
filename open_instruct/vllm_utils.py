@@ -868,7 +868,12 @@ class LLMRayActor:
 
 async def process_request(actor: LLMRayActor, sub_request_id: str, sampling_params: SamplingConfig):
     """Process a single async request with tool support, awaiting tools inline."""
-    await _check_health(actor.server_port)
+    # NOTE: _check_health is intentionally NOT called here. It is only needed at startup
+    # (see _init_openai_client). Calling it on every request is wasteful and causes spurious
+    # TimeoutError crashes when the vLLM server is busy processing long generations: the HTTP
+    # health-check times out, asyncio.TimeoutError propagates through active_tasks, and
+    # check_background_threads() incorrectly kills the training run.
+    # Engine liveness is already monitored via loop_thread.is_alive() in check_background_threads.
     response_tokens = []
     response_logprobs = []
     response_masks = []
