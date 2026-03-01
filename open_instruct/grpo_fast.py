@@ -2230,7 +2230,10 @@ def main(
     # so placement groups can use STRICT_SPREAD across nodes. Otherwise start a local cluster.
     ray_init_kwargs: dict = {
         "dashboard_host": "0.0.0.0",
-        "runtime_env": {"excludes": [".git/", "checkpoints/", "output/"], "env_vars": dict(os.environ)},
+        "runtime_env": {
+            "excludes": [".git/", ".venv/", "checkpoints/", "output/", "logs/", "wandb/", "cache/", "site/"],
+            "env_vars": dict(os.environ),
+        },
     }
     if os.environ.get("RAY_ADDRESS"):
         ray_init_kwargs["address"] = "auto"
