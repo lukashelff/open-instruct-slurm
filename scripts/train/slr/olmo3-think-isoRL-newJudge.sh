@@ -50,6 +50,7 @@ CODE_API_URL="http://${JUDGE_IP}:${CODE_API_PORT}/test_program"
 
 echo "=========================================="
 echo "Job: $JOB_NAME  (ID: $SLURM_JOB_ID)"
+echo "Output dir: $OUTPUT_DIR"
 echo "Nodes: $SLURM_NODELIST"
 echo "Head: $HEAD_NODE ($HEAD_IP:$RAY_PORT)"
 echo "Judge: $JUDGE_NODE ($JUDGE_IP) — LLM: $LLM_JUDGE_PORT, Code: $CODE_API_PORT"
@@ -140,7 +141,7 @@ GRPO_ARGS="--exp_name $JOB_NAME \
   --dataset_mixer_eval_list allenai/Dolci-Think-RL-7B 8 AIML-TUDA/SLR-Bench:v1-All 4 \
   --dataset_mixer_eval_list_splits train \
   --max_prompt_token_length 5000 \
-  --response_length 32768 \
+  --response_length 30840 \
   --pack_length 35840 \
   --model_name_or_path allenai/Olmo-3-7B-Think-DPO \
   --chat_template_name olmo_thinker \
@@ -196,6 +197,11 @@ JUDGE_APPTAINER_ENV=(
   --env "LLM_JUDGE_PORT=$LLM_JUDGE_PORT"
   --env "LLM_JUDGE_NUM_ENGINES=$LLM_JUDGE_NUM_ENGINES"
   --env "LLM_JUDGE_MAX_MODEL_LEN=$LLM_JUDGE_MAX_MODEL_LEN"
+  --env "LLM_JUDGE_USE_UV=false"
+  --env "LLM_JUDGE_EXTRA_ARGS=--language-model-only --reasoning-parser qwen3 --enable-prefix-caching"
+  --env "BASE_DIR=/stage"
+  --env "JOB_NAME=$JOB_NAME"
+  --env "SLURM_JOB_ID=$SLURM_JOB_ID"
   --env "NCCL_CUMEM_ENABLE=0"
   --env "VLLM_ALLOW_LONG_MAX_MODEL_LEN=1"
   --env "VLLM_ALLOW_INSECURE_SERIALIZATION=1"
@@ -218,28 +224,14 @@ JUDGE_APPTAINER_ENV=(
 # ===========================================================================
 
 # Step 1: Launch vLLM judge server (vLLM container, judge node, background)
-LLM_JUDGE_LOG_FILE="$BASE_DIR/logs/judge/${JOB_NAME}_${SLURM_JOB_ID}.log"
-mkdir -p "$(dirname "$LLM_JUDGE_LOG_FILE")"
-
 srun --overlap --nodes=1 --ntasks=1 -w "$JUDGE_NODE" \
   apptainer exec --nv --writable-tmpfs "${JUDGE_APPTAINER_ENV[@]}" "$VLLM_SIF_FILE" \
   bash -c '
-    set -euo pipefail
-    JUDGE_GPUS=$(seq -s, 0 $((LLM_JUDGE_NUM_ENGINES - 1)))
-    echo "[judge-vllm] Starting vLLM serve: $LLM_JUDGE_MODEL (TP=$LLM_JUDGE_NUM_ENGINES, GPUs=$JUDGE_GPUS)"
-    CUDA_VISIBLE_DEVICES="$JUDGE_GPUS" \
-      vllm serve "$LLM_JUDGE_MODEL" \
-        --host 0.0.0.0 \
-        --port "$LLM_JUDGE_PORT" \
-        --tensor-parallel-size "$LLM_JUDGE_NUM_ENGINES" \
-        --max-model-len "$LLM_JUDGE_MAX_MODEL_LEN" \
-        --trust-remote-code \
-        --language-model-only \
-        --reasoning-parser qwen3 \
-        --enable-prefix-caching \
-  ' > "$LLM_JUDGE_LOG_FILE" 2>&1 &
+    cd /stage
+    source scripts/train/slr/judge_setup.sh
+  ' &
 JUDGE_SRUN_PID=$!
-echo "[launch] Judge vLLM srun PID: $JUDGE_SRUN_PID (log: $LLM_JUDGE_LOG_FILE)"
+echo "[launch] Judge vLLM srun PID: $JUDGE_SRUN_PID"
 
  # Step 2: Main training (open_instruct container, all 8 nodes)
 # On the judge node (PROCID=0), only the code API runs (CPU-only, no GPU conflict).
@@ -258,22 +250,6 @@ srun --overlap --nodes=8 --ntasks=8 apptainer exec --nv --writable-tmpfs "${APPT
     elif [ "${SLURM_PROCID:-0}" = "0" ]; then
       # --- Judge node: code API only (vLLM runs in separate container) ---
       source scripts/train/slr/code_api_setup.sh
-
-      # Wait for vLLM judge to become healthy (started in the vLLM container)
-      echo "[judge-wait] Waiting for vLLM server on port $LLM_JUDGE_PORT ..."
-      MAX_WAIT=600
-      WAITED=0
-      while [ $WAITED -lt $MAX_WAIT ]; do
-          if curl -sf "http://127.0.0.1:${LLM_JUDGE_PORT}/health" >/dev/null 2>&1; then
-              echo "[judge-wait] vLLM healthy after ${WAITED}s"
-              break
-          fi
-          /usr/bin/sleep 5
-          WAITED=$((WAITED + 5))
-      done
-      if [ $WAITED -ge $MAX_WAIT ]; then
-          echo "[judge-wait] WARNING: vLLM not healthy after ${MAX_WAIT}s"
-      fi
 
       # Block until training finishes (keeps the srun task alive)
       echo "[judge-wait] Code API running, sleeping until job ends ..."

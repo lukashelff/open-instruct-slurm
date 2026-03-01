@@ -1341,7 +1341,12 @@ class SLRBenchVerifier(VerifierFunction):
         return normalized_reward
 
     def __call__(
-        self, tokenized_prediction: list[int], prediction: str, label: str | dict, query: str | None = None
+        self,
+        tokenized_prediction: list[int],
+        prediction: str,
+        label: str | dict,
+        query: str | None = None,
+        rollout_state: dict | None = None,
     ) -> VerificationResult:
         """
         Run BOTH isomorphic and base judges, return the selected one as the training score,
