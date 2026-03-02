@@ -8,8 +8,8 @@
 #SBATCH --nodes=8
 #SBATCH --gpus-per-node=8
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=104
-#SBATCH --mem=1T
+#SBATCH --cpus-per-task=112
+#SBATCH --mem=0
 #SBATCH --time=100:00:00
 #SBATCH --output=logs/%x_%j/output.out
 #SBATCH --error=logs/%x_%j/error.err
@@ -140,7 +140,7 @@ GRPO_ARGS="--exp_name $JOB_NAME \
   --apply_verifiable_reward true \
   --llm_judge_model hosted_vllm/$LLM_JUDGE_MODEL \
   --llm_judge_timeout 1200 \
-  --llm_judge_max_tokens 2048 \
+  --llm_judge_max_tokens 1048 \
   --llm_judge_max_context_length 32768 \
   --llm_judge_temperature 0.7 \
   --clip_higher 0.272 \

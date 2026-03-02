@@ -378,7 +378,7 @@ class StreamingDataLoaderConfig:
 
     # SLR-Bench verifier
     slr_reward: Literal["isomorphic", "base"] = "isomorphic"
-    """Which SLR judge score to use for training reward: 'isomorphic' or 'base'. Both always run and are tracked in wandb."""
+    """Which SLR judge score to use for training reward: 'isomorphic' or 'base'."""
 
     # Non stop penalty
     non_stop_penalty: bool = False
@@ -1068,12 +1068,16 @@ class DataPreparationActor:
             if self.shutdown_requested:
                 return
 
+            _last_wait_log = 0.0
             while step - self._last_consumed_step > self.config.async_steps:
                 if self.shutdown_requested:
                     return
-                logger.info(
-                    f"[DataPreparationActor] Step {step}: waiting for step {self._last_consumed_step + self.config.async_steps} to be consumed. Consider increasing training compute."
-                )
+                now = time.time()
+                if now - _last_wait_log >= 10.0:
+                    logger.info(
+                        f"[DataPreparationActor] Step {step}: waiting for step {self._last_consumed_step + self.config.async_steps} to be consumed. Consider increasing training compute."
+                    )
+                    _last_wait_log = now
                 time.sleep(0.1)
 
             logger.info(
