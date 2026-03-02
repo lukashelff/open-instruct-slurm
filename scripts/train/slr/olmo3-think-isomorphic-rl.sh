@@ -54,7 +54,7 @@ mkdir -p "$BASE_DIR/logs" "$BASE_DIR/.cache/nltk_data" "$BASE_DIR/.cache/open_in
 
 # --- 3a. Load secrets (API keys, tokens) from file if it exists. This file is not in the repo and should be created by each user with their own keys.
 if [ -f "$BASE_DIR/secrets.env" ]; then
-source "$BASE_DIR/secrets.env"
+  source "$BASE_DIR/secrets.env"
 fi
 
 # --- 3b. Pre-pull container image (avoid 8 nodes racing to build SIF) ---
@@ -167,14 +167,13 @@ GRPO_ARGS="--exp_name $JOB_NAME \
 srun --nodes=8 --ntasks=8 apptainer exec --nv --writable-tmpfs "${APPTAINER_ENV[@]}" "$SIF_FILE" \
   bash -c '
     cd /stage
-
     if [ "${SLURM_PROCID:-0}" = "1" ]; then
       # --- Ray head + training ---
       source scripts/train/slr/ray_setup.sh
       /usr/bin/sleep 20  # extra wait for workers to join
       uv run python -c "import nltk; nltk.download(\"punkt_tab\", quiet=True); nltk.download(\"punkt\", quiet=True)"
       uv run python open_instruct/grpo_fast.py '"$GRPO_ARGS"' || true
-      ray stop --force 2>/dev/null || true
+      uv run ray stop --force 2>/dev/null || true
 
     elif [ "${SLURM_PROCID:-0}" = "0" ]; then
       # --- Judge node: code API + LLM judge ---
