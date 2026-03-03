@@ -90,7 +90,7 @@ from open_instruct.dataset_transformation import (
     validate_dataset_tools,
     visualize_token,
 )
-from open_instruct.environments.base import BaseEnvConfig
+from open_instruct.environments.base import BaseEnvConfig, TextRLEnvironment
 from open_instruct.environments.pool import EnvironmentPool
 from open_instruct.environments.tools.parsers import create_tool_parser
 from open_instruct.environments.tools.tools import TOOL_REGISTRY, GenericMCPToolConfig
@@ -1360,6 +1360,7 @@ def create_model_and_optimizer(
         tool_definitions=tool_definitions,
         tool_stop_sequences=tool_stop_sequences,
         max_steps=tools_config.max_steps if tools_config else 5,
+        per_turn_max_tokens=tools_config.per_turn_max_tokens if tools_config else None,
         mask_tool_use=streaming_config.mask_tool_use,
         pools=pools,
         prompt_queue=prompt_Q,
@@ -1440,6 +1441,7 @@ def weight_sync_thread(
     actor_manager: ActorManager,
     weight_sync_metrics_Q: Queue,
     resume_training_step: int = 1,
+    inflight_updates: bool = False,
 ):
     """Thread function that handles weight sync operations and actor manager coordination."""
     logger.info("[Weight Sync Thread] 🚀 Starting weight sync thread")
@@ -1473,13 +1475,16 @@ def weight_sync_thread(
                 enable=args.verbose,
             )
 
-            # Ensure all vLLM engine update RPCs have completed before unpausing actors.
-            # Without waiting here, should_stop may flip to False while updates are still queued.
-            engine_update_refs = [ref for refs in weight_broadcast_results for ref in refs]
-            if engine_update_refs:
-                ray_get_with_progress(
-                    engine_update_refs, desc="[Weight Sync Thread] Waiting for vLLM engine update RPCs", enable=False
-                )
+            if not inflight_updates:
+                # Ensure all vLLM engine update RPCs have completed before unpausing actors.
+                # Without waiting here, should_stop may flip to False while updates are still queued.
+                engine_update_refs = [ref for refs in weight_broadcast_results for ref in refs]
+                if engine_update_refs:
+                    ray_get_with_progress(
+                        engine_update_refs,
+                        desc="[Weight Sync Thread] Waiting for vLLM engine update RPCs",
+                        enable=False,
+                    )
 
             # Allow actors to resume
             ray.get(actor_manager.set_should_stop.remote(False))
@@ -1902,6 +1907,7 @@ def run_training(
         actor_manager,
         weight_sync_metrics_Q,
         resume_training_step,
+        streaming_config.inflight_updates,
     )
 
     """Run the main training loop with worker threads."""
@@ -2333,6 +2339,7 @@ def main(
             config_cls = TOOL_REGISTRY.get(parsed.name)
             if config_cls and not issubclass(config_cls.tool_class, Tool):
                 base_env_config["env_name"] = parsed.call_name
+                base_env_config["is_text_env"] = issubclass(config_cls.tool_class, TextRLEnvironment)
                 break
     (policy_group, vllm_engines, resume_training_step, episode, actor_manager, model_dims, _data_prep_actor) = (
         create_model_and_optimizer(
