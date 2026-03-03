@@ -1241,26 +1241,51 @@ class SLRBenchVerifier(VerifierFunction):
 
     def __init__(self, verifier_config: SLRBenchVerifierConfig) -> None:
         super().__init__("slr_bench", verifier_config=verifier_config, weight=1.0)
-        self._metrics: dict[str, Any] | None = (
-            None  # loaded lazily on first __call__ to avoid polluting sys.modules before Ray actors are created
-        )
+        # Import the verifier modules directly instead of using evaluate.load().
+        # evaluate.load() uses filelock internally which crashes with
+        # "OSError: Stale file handle" on NFS when many Ray workers race.
+        from open_instruct.slr.PrivateVerifier import _evaluate_with_prolog as _eval_private  # noqa: PLC0415
+        from open_instruct.slr.PublicVerifier import _evaluate_with_prolog as _eval_public  # noqa: PLC0415
 
-    def _get_metrics(self) -> dict[str, Any]:
-        """Lazy-load BOTH evaluate metrics (isomorphic + base) on first use.
+        self._eval_private = _eval_private
+        self._eval_public = _eval_public
+        logger.info("SLRBenchVerifier: loaded verifier modules directly (no evaluate.load).")
 
-        evaluate.load() registers dynamic 'evaluate_modules' in sys.modules.
-        If that happens before Ray creates LLMRayActors, Ray serialization fails
-        on workers with 'No module named evaluate_modules'.
-        """
-        if self._metrics is None:
-            from evaluate import load  # noqa: PLC0415
+    def _compute_metric(self, eval_fn, predictions: list, references: list) -> dict:
+        """Run a single verifier's _compute logic using its _evaluate_with_prolog function."""
+        if not isinstance(predictions, list):
+            predictions = [predictions]
+        if len(predictions) != len(references):
+            raise ValueError(
+                f"Number of predictions ({len(predictions)}) and references ({len(references)}) don't match"
+            )
+        timeout = 10 if len(predictions) > 500 else 5
+        eval_inputs = []
+        for i, (prediction, reference) in enumerate(zip(predictions, references)):
+            validation_program = reference.get("validation_program", reference.get("validation program"))
+            eval_config = reference.get(
+                "evaluation_config", {"positive_predicate": "eastbound", "negative_predicate": "westbound"}
+            )
+            if not validation_program:
+                raise ValueError(f"Example {i} does not contain validation program field")
+            eval_inputs.append((prediction, validation_program, eval_config, timeout))
 
-            root_dir = os.path.dirname(os.path.abspath(__file__))
-            self._metrics = {
-                "isomorphic": load(os.path.join(root_dir, "slr", "PrivateVerifier.py")),
-                "base": load(os.path.join(root_dir, "slr", "PublicVerifier.py")),
-            }
-        return self._metrics
+        results = [eval_fn(*inp) for inp in eval_inputs]
+
+        partial_scores = [r["partial_score"] for r in results]
+        correct_count = sum(1 for r in results if r["is_correct"])
+        syntax_valid_count = sum(1 for r in results if r["syntax_valid"])
+
+        accuracy = correct_count / len(predictions) if predictions else 0
+        partial_score = sum(partial_scores) / len(predictions) if partial_scores else 0
+        syntax_score = syntax_valid_count / len(predictions) if predictions else 0
+
+        return {
+            "accuracy": accuracy,
+            "partial_score": partial_score,
+            "syntax_score": syntax_score,
+            "detailed_results": results,
+        }
 
     @staticmethod
     def _extract_prolog_rule(prediction: str) -> str:
@@ -1377,14 +1402,12 @@ class SLRBenchVerifier(VerifierFunction):
 
         rule = self._extract_prolog_rule(prediction)
         rule_simplicity_bonus = self.get_rule_simplicity_bonus(rule)
-        metrics_dict = self._get_metrics()
 
         judge_scores: dict[str, float] = {}
-        for judge_name, metric in metrics_dict.items():
+        judge_eval_fns = {"isomorphic": self._eval_private, "base": self._eval_public}
+        for judge_name, eval_fn in judge_eval_fns.items():
             try:
-                # Use _compute directly to avoid evaluate Module.add_batch path where
-                # selected_feature_format can be None for locally loaded metrics (TypeError).
-                result = metric._compute(predictions=[rule], references=[ref])
+                result = self._compute_metric(eval_fn, predictions=[rule], references=[ref])
             except Exception as e:
                 logger.warning("SLRBenchVerifier %s metric failed: %s", judge_name, e, exc_info=True)
                 judge_scores[judge_name] = 0.0
