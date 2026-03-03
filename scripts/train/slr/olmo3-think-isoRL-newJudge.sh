@@ -13,8 +13,8 @@
 #SBATCH --nodes=8
 #SBATCH --gpus-per-node=8
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=90
-#SBATCH --mem=1T
+#SBATCH --cpus-per-task=112
+#SBATCH --mem=0
 #SBATCH --time=100:00:00
 #SBATCH --output=logs/%x_%j/output.out
 #SBATCH --error=logs/%x_%j/error.err
@@ -107,6 +107,7 @@ APPTAINER_ENV=(
   --env "WANDB_API_KEY=$WANDB_API_KEY"
   --env "RAY_ADDRESS=$RAY_ADDRESS"
   --env "RAY_PORT=$RAY_PORT"
+  --env "RAY_HEAD_PROCID=0"
   --env "RAY_DEDUP_LOGS=0"
   --env "HOSTED_VLLM_API_BASE=$HOSTED_VLLM_API_BASE"
   --env "CODE_API_URL=$CODE_API_URL"
@@ -119,12 +120,15 @@ APPTAINER_ENV=(
   --env "VLLM_ALLOW_LONG_MAX_MODEL_LEN=1"
   --env "VLLM_ALLOW_INSECURE_SERIALIZATION=1"
   --env "VLLM_LOGGING_LEVEL=WARNING"
+  --env "SSL_CERT_FILE="
+  --env "REQUESTS_CA_BUNDLE="
+  --env "CURL_CA_BUNDLE="
 )
 
 # --- 5. GRPO training arguments ---
 GRPO_ARGS="--exp_name $JOB_NAME \
   --queue_dashboard_port 8765 \
-  --beta 0.04 \
+  --beta 0.0 \
   --num_samples_per_prompt_rollout 8 \
   --num_unique_prompts_rollout 64 \
   --num_mini_batches 1 \
