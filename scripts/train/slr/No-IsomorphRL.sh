@@ -7,7 +7,7 @@
 #SBATCH --nodes=6
 #SBATCH --gpus-per-node=8
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=104
+#SBATCH --cpus-per-task=112
 #SBATCH --mem=1T
 #SBATCH --time=100:00:00
 #SBATCH --output=logs/%x_%j/output.out
@@ -83,6 +83,9 @@ APPTAINER_ENV=(
   --env "VLLM_ALLOW_LONG_MAX_MODEL_LEN=1"
   --env "VLLM_ALLOW_INSECURE_SERIALIZATION=1"
   --env "VLLM_LOGGING_LEVEL=WARNING"
+  --env "SSL_CERT_FILE="
+  --env "REQUESTS_CA_BUNDLE="
+  --env "CURL_CA_BUNDLE="
 )
 
 # --- 5. One srun, N tasks: task 0 = head (Ray + grpo_fast.py), others = workers. Use SLURM_PROCID (hostname can differ in container). ---
