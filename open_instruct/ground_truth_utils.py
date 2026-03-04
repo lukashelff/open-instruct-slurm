@@ -1287,13 +1287,30 @@ class SLRBenchVerifier(VerifierFunction):
             "detailed_results": results,
         }
 
+    # Regex to extract content between [RULE] and [/RULE] tags (case-insensitive, dotall)
+    _RULE_TAG_PATTERN = re.compile(r"\[RULE\]\s*(.*?)\s*\[/RULE\]", re.IGNORECASE | re.DOTALL)
+
     @staticmethod
-    def _extract_prolog_rule(prediction: str) -> str:
-        """Extract the Prolog rule from model output (after optional thinking block)."""
+    def _extract_prolog_rule(prediction: str) -> str | None:
+        """Extract the Prolog rule from model output.
+
+        Looks for ``[RULE]...[/RULE]`` tags first (after stripping the
+        thinking section).  If the tags are present, returns the content
+        between them.  If the tags are **not** found, returns ``None`` so
+        the caller can assign a score of 0 – this prevents degenerate /
+        garbage outputs from being accidentally rewarded.
+        """
         cleaned = remove_thinking_section(prediction)
         if not cleaned.strip():
-            return prediction.strip()
-        return cleaned.strip()
+            return None
+
+        match = SLRBenchVerifier._RULE_TAG_PATTERN.search(cleaned)
+        if match:
+            rule_text = match.group(1).strip()
+            return rule_text if rule_text else None
+
+        # No [RULE]...[/RULE] tags found → signal missing format
+        return None
 
     @staticmethod
     def get_rule_simplicity_bonus(model_response: str) -> float:
@@ -1401,6 +1418,14 @@ class SLRBenchVerifier(VerifierFunction):
             return VerificationResult(score=0.0, extra_scores={"slr_bench_isomorphic": 0.0, "slr_bench_base": 0.0})
 
         rule = self._extract_prolog_rule(prediction)
+
+        # If the model did not use [RULE]...[/RULE] tags, return 0.0.
+        # This prevents degenerate / garbage outputs from being rewarded.
+        if rule is None:
+            return VerificationResult(
+                score=0.0, extra_scores={"slr_bench_isomorphic": 0.0, "slr_bench_base": 0.0, "slr_bench_format": 0.0}
+            )
+
         rule_simplicity_bonus = self.get_rule_simplicity_bonus(rule)
 
         judge_scores: dict[str, float] = {}
@@ -1430,6 +1455,7 @@ class SLRBenchVerifier(VerifierFunction):
         reward_judge = (getattr(self.verifier_config, "slr_reward", "isomorphic") or "isomorphic").lower()
         selected_score = min(1.0, max(0.0, judge_scores.get(reward_judge, 0.0)))
         extra_scores = {f"slr_bench_{k}": min(1.0, max(0.0, v)) for k, v in judge_scores.items()}
+        extra_scores["slr_bench_format"] = 1.0  # tags were present
 
         return VerificationResult(score=selected_score, extra_scores=extra_scores)
 

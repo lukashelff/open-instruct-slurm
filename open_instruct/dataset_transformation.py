@@ -1416,6 +1416,8 @@ def slr_bench_prepare_v1(row: dict[str, Any], tokenizer: PreTrainedTokenizer, **
     validation_program = row.get("validation program") or row.get("validation_program")
     if prompt is None or validation_program is None:
         return row
+    prompt += "\n Wrap your final Prolog rule in [RULE]...[/RULE] tags. Only the content inside these tags will be evaluated."
+    
     validation_program_dict = {
         "validation_program": validation_program,
         "evaluation_config": {"positive_predicate": "eastbound", "negative_predicate": "westbound"},
