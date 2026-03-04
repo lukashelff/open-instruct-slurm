@@ -8,7 +8,7 @@
 #SBATCH --gpus-per-node=8
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=112
-#SBATCH --mem=1T
+#SBATCH --mem=0
 #SBATCH --time=100:00:00
 #SBATCH --output=logs/%x_%j/output.out
 #SBATCH --error=logs/%x_%j/error.err
@@ -91,7 +91,7 @@ APPTAINER_ENV=(
 # --- 5. One srun, N tasks: task 0 = head (Ray + grpo_fast.py), others = workers. Use SLURM_PROCID (hostname can differ in container). ---
 GRPO_ARGS="--exp_name $JOB_NAME \
   --queue_dashboard_port 8765 \
-  --beta 0.05 \
+  --beta 0.1 \
   --num_samples_per_prompt_rollout 8 \
   --num_unique_prompts_rollout 64 \
   --num_mini_batches 1 \
@@ -112,7 +112,8 @@ GRPO_ARGS="--exp_name $JOB_NAME \
   --pack_length 35840 \
   --model_name_or_path allenai/Olmo-3-7B-Think-DPO \
   --chat_template_name olmo_thinker \
-  --non_stop_penalty False \
+  --non_stop_penalty True \
+  --apply_language_consistency_penalty True \
   --mask_truncated_completions False \
   --temperature 1.0 \
   --ground_truths_key ground_truth \

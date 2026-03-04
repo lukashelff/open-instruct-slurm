@@ -384,6 +384,10 @@ class StreamingDataLoaderConfig:
     non_stop_penalty: bool = False
     non_stop_penalty_value: float = 0.0
 
+    # Language consistency penalty
+    apply_language_consistency_penalty: bool = False
+    """Multiply reward by a [0,1] score that detects script contamination (CJK, etc.) and n-gram repetition."""
+
     # Evolving rubric reward
     apply_evolving_rubric_reward: bool = False
     """Whether to generate and apply evolving rubrics for reward computation.

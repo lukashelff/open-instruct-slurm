@@ -73,7 +73,7 @@ def evaluate_prediction(prediction, validation_program, eval_config, timeout=5, 
 check({vars}) :- pos({vars}), {positive_pred}({vars}).      % positive covered
 check({vars}) :- neg({vars}), \\+ {positive_pred}({vars}).  % negative rejected
 % Count successful checks
-check_count(Count) :- 
+check_count(Count) :-
     (setof(({vars}), ((pos({vars}); neg({vars})), check({vars})), CorrectExamples) ->
         length(CorrectExamples, Count)
     ;
@@ -137,4 +137,3 @@ check_all :- forall((pos({vars});neg({vars})), check({vars})).
     finally:
         if os.path.exists(temp_file):
             os.remove(temp_file)
-            

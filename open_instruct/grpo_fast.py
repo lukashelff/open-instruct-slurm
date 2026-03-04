@@ -2309,6 +2309,7 @@ def main(
         non_stop_penalty_value=streaming_config.non_stop_penalty_value,
         only_reward_good_outputs=tools_config.only_reward_good_outputs,
         additive_format_reward=streaming_config.additive_format_reward,
+        apply_language_consistency_penalty=streaming_config.apply_language_consistency_penalty,
         verifier_functions=build_all_verifiers(args, streaming_config),
         reward_aggregator=streaming_config.reward_aggregator,
     )

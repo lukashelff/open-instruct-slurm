@@ -1342,34 +1342,51 @@ class SLRBenchVerifier(VerifierFunction):
 
     @staticmethod
     def compute_reward(
-        accuracy: float, partial_score: float, syntax_score: float, rule_simplicity_bonus: float, k: int = 6
+        accuracy: float,
+        partial_score: float,
+        syntax_score: float,
+        rule_simplicity_bonus: float,
+        k: int = 6,
+        partial_gate: float = 0.5,
     ) -> float:
+        """Compute reward in [0, 1] for ILP rule induction.
+
+        Design principles (GRPO best practice):
+        - **Correctness-only base**: reward comes exclusively from accuracy
+          and partial score. No free points for syntax or simplicity alone,
+          which previously created a ~1.1 floor that incentivised garbage.
+        - **Partial credit with soft gate**: ``partial_score`` is raised to
+          the power *k* (default 6) so only rules covering most examples get
+          meaningful partial credit.  Below *partial_gate* the reward is 0.
+        - **Simplicity as a multiplicative modifier** (not additive): a small
+          bonus/penalty that scales the correctness reward.  A perfect rule
+          with a concise body scores slightly higher than the same rule with
+          unnecessary literals, but a wrong rule with pretty formatting still
+          scores 0.
+        - ``syntax_score`` is intentionally **unused** for training reward.
+          If a rule ran in Prolog and got partial > 0 it is syntactically
+          valid by definition; giving extra reward for "parses but is wrong"
+          is pure reward-hacking fuel.  The value is still accepted as an
+          argument for backward compatibility and tracked in extra_scores.
+
+        Returns:
+            float: reward in [0, 1].
         """
-        Compute normalized reward in [0,1] for ILP rule induction using GRPO.
-        """
+        if accuracy == 1.0:
+            # Full marks.  Apply a small simplicity modifier [0.95, 1.0]
+            # so that among equally correct rules, shorter ones are preferred.
+            return 0.95 + 0.05 * rule_simplicity_bonus
 
-        # Component weights (relative importance)
-        accuracy_weight = 2.0
-        partial_weight = 1.0
-        syntax_weight = 0.2
-        simplicity_weight = 0.2
+        # Partial credit: only when the rule covers a meaningful fraction.
+        if partial_score < partial_gate:
+            return 0.0
 
-        # Components
-        accuracy_bonus = accuracy_weight if accuracy == 1.0 else 0.0
-        partial_reward = partial_weight * (partial_score**k)
-        syntax_bonus = syntax_weight * syntax_score
-        simplicity_bonus = simplicity_weight * rule_simplicity_bonus
-
-        # Raw reward
-        raw_reward = accuracy_bonus + partial_reward + syntax_bonus + simplicity_bonus
-
-        # Maximum possible reward (for normalization)
-        max_reward = accuracy_weight + partial_weight * 1.0 + syntax_weight * 1.0 + simplicity_weight * 1.0
-
-        # Normalize to [0,1]
-        normalized_reward = raw_reward / max_reward
-
-        return normalized_reward
+        # partial_score**k compresses the range: 0.5→0.016, 0.8→0.26, 0.95→0.74
+        # Scale into [0, 0.9] so partial is always strictly below full accuracy.
+        base = partial_score**k
+        # Multiplicative simplicity modifier: scales base by [0.9, 1.0]
+        simplicity_mod = 0.9 + 0.1 * rule_simplicity_bonus
+        return min(0.9, base * simplicity_mod)
 
     def __call__(
         self,
@@ -1509,6 +1526,101 @@ def soft_format_reward_func(responses: list[str], reward_scale: float = 1.0) -> 
     return [reward_scale if match else 0.0 for match in matches]
 
 
+def language_consistency_score(text: str, ngram_size: int = 4, repetition_cap: float = 0.35) -> float:
+    """Score how linguistically consistent a response is, in [0, 1].
+
+    Detects two common RLVR degeneration modes:
+
+    1. **Script contamination** — non-Latin characters (CJK, Arabic, Cyrillic,
+       etc.) appearing in what should be English + Prolog output.  A small
+       allowance is made for Unicode math symbols and occasional accented chars.
+    2. **Token repetition** — long runs of repeated n-grams (e.g. colon-streams,
+       punctuation loops) that inflate token count without content.
+
+    The two sub-scores are multiplied so that *either* failure mode drags the
+    overall score toward 0.
+
+    Args:
+        text: The full decoded model response (including thinking section).
+        ngram_size: Size of character n-grams for repetition detection.
+        repetition_cap: Fraction of repeated n-grams above which the score
+            starts dropping.  0.35 is lenient enough for natural prose.
+
+    Returns:
+        float in [0, 1].  1.0 = clean, 0.0 = fully degenerate.
+    """
+    if not text or len(text.strip()) < 20:
+        return 1.0  # too short to judge — don't penalise
+
+    # --- 1. Script consistency (Latin + common programming symbols) -----------
+    # Count characters that are clearly *not* Latin-script / ASCII / common math.
+    # We allow: ASCII, Latin-Extended (accents), Greek (math), common symbols.
+    n_chars = 0
+    n_foreign = 0
+    for ch in text:
+        cp = ord(ch)
+        if cp < 0x20:  # control chars — skip
+            continue
+        n_chars += 1
+        # Allow: Basic Latin, Latin-1 Supplement, Latin Extended-A/B,
+        #        Greek and Coptic (math), General Punctuation, Math Operators,
+        #        Miscellaneous Symbols, common whitespace.
+        if cp <= 0x024F:  # Basic Latin through Latin Extended-B
+            continue
+        if 0x0370 <= cp <= 0x03FF:  # Greek (α, β, θ, etc.)
+            continue
+        if 0x2000 <= cp <= 0x206F:  # General Punctuation
+            continue
+        if 0x2190 <= cp <= 0x27FF:  # Arrows, Math Operators, Misc Technical
+            continue
+        if 0xFE00 <= cp <= 0xFE0F:  # Variation selectors
+            continue
+        n_foreign += 1
+
+    if n_chars == 0:
+        return 1.0
+    foreign_ratio = n_foreign / n_chars
+    # Generous threshold: up to 5% foreign is fine (e.g. occasional emoji).
+    # Beyond that, score drops linearly to 0 at 40% foreign.
+    script_score = 1.0 if foreign_ratio <= 0.05 else max(0.0, 1.0 - (foreign_ratio - 0.05) / 0.35)
+
+    # --- 2. N-gram repetition ------------------------------------------------
+    # Excessive character-level n-gram repetition signals degenerate loops.
+    chars = text.replace("\n", " ").replace("\t", " ")
+    if len(chars) < ngram_size + 10:
+        rep_score = 1.0
+    else:
+        ngrams: list[str] = [chars[i : i + ngram_size] for i in range(len(chars) - ngram_size + 1)]
+        total = len(ngrams)
+        unique = len(set(ngrams))
+        repetition_ratio = 1.0 - (unique / total)  # 0 = all unique, 1 = all same
+        if repetition_ratio <= repetition_cap:
+            rep_score = 1.0
+        else:
+            rep_score = max(0.0, 1.0 - (repetition_ratio - repetition_cap) / (1.0 - repetition_cap))
+
+    return script_score * rep_score
+
+
+def language_consistency_penalty(
+    responses: list[str], penalty_scale: float = 1.0, ngram_size: int = 4, repetition_cap: float = 0.35
+) -> list[float]:
+    """Compute per-response language consistency scores for a batch.
+
+    Returns a list of floats in [0, 1] (one per response).
+    Use as a multiplicative modifier: ``final_reward = base_reward * lc_score``.
+
+    Args:
+        responses: List of decoded model responses.
+        penalty_scale: Not used as additive; kept for API symmetry.  The
+            returned scores are always in [0, 1] — the caller decides how
+            to apply them.
+        ngram_size: Passed to ``language_consistency_score``.
+        repetition_cap: Passed to ``language_consistency_score``.
+    """
+    return [language_consistency_score(r, ngram_size=ngram_size, repetition_cap=repetition_cap) for r in responses]
+
+
 async def cleanup_all_llm_judge_clients():
     """
     Cleanup function to properly close all LLM judge clients before shutdown.
@@ -1600,6 +1712,8 @@ class RewardConfig:
     non_stop_penalty_value: float = -10.0
     only_reward_good_outputs: bool = False
     additive_format_reward: bool = False
+    apply_language_consistency_penalty: bool = False
+    """Multiply reward by a [0,1] score that detects script contamination (CJK, etc.) and n-gram repetition."""
     verifier_functions: dict[str, VerifierFunction] = dataclasses.field(default_factory=dict)
     reward_aggregator: Literal["last", "sum"] = "last"
     """How to combine per-turn rewards: 'last' (use last turn reward) or 'sum' (sum all rewards across turns)."""
@@ -1684,6 +1798,12 @@ class RewardConfig:
                     np_value = np.array(value)
                     metrics[f"objective/{key}_reward"] = np_value.mean()
                     metrics[f"objective/{key}_correct_rate"] = (np_value > 0.0).mean()
+
+            if self.apply_language_consistency_penalty:
+                lc_scores = language_consistency_penalty(decoded_responses)
+                for i in range(len(scores)):
+                    scores[i] = scores[i] * lc_scores[i]
+                metrics["val/language_consistency"] = np.array(lc_scores).mean()
 
             if self.non_stop_penalty:
                 assert len(finish_reasons) == len(scores)
