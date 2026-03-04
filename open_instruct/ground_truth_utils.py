@@ -1289,28 +1289,51 @@ class SLRBenchVerifier(VerifierFunction):
 
     # Regex to extract content between [RULE] and [/RULE] tags (case-insensitive, dotall)
     _RULE_TAG_PATTERN = re.compile(r"\[RULE\]\s*(.*?)\s*\[/RULE\]", re.IGNORECASE | re.DOTALL)
+    # Fallback: prolog-labelled code block, then any fenced code block
+    _PROLOG_BLOCK_PATTERN = re.compile(r"```prolog\s*(.*?)\s*```", re.IGNORECASE | re.DOTALL)
+    _CODE_BLOCK_PATTERN = re.compile(r"```(?:[a-zA-Z0-9]*\n)?(.*?)```", re.DOTALL)
 
     @staticmethod
-    def _extract_prolog_rule(prediction: str) -> str | None:
+    def _extract_prolog_rule(prediction: str) -> tuple[str, bool] | tuple[None, bool]:
         """Extract the Prolog rule from model output.
 
-        Looks for ``[RULE]...[/RULE]`` tags first (after stripping the
-        thinking section).  If the tags are present, returns the content
-        between them.  If the tags are **not** found, returns ``None`` so
-        the caller can assign a score of 0 – this prevents degenerate /
-        garbage outputs from being accidentally rewarded.
+        Uses a tiered extraction strategy (after stripping the thinking section):
+          1. ``[RULE]...[/RULE]`` tags  → (content, True)   format compliant
+          2. ````prolog...```` block    → (content, False)  code-block fallback
+          3. Any fenced code block      → (content, False)  code-block fallback
+          4. Nothing found              → (None, False)     return 0.0 to prevent
+             degenerate / garbage outputs being accidentally rewarded.
+
+        Returns a tuple ``(rule_text, format_ok)`` where ``format_ok`` is
+        ``True`` only when the preferred ``[RULE]`` tags were used.
         """
         cleaned = remove_thinking_section(prediction)
         if not cleaned.strip():
-            return None
+            return None, False
 
+        # Tier 1: explicit [RULE] tags
         match = SLRBenchVerifier._RULE_TAG_PATTERN.search(cleaned)
         if match:
             rule_text = match.group(1).strip()
-            return rule_text if rule_text else None
+            if rule_text:
+                return rule_text, True
 
-        # No [RULE]...[/RULE] tags found → signal missing format
-        return None
+        # Tier 2: ```prolog ... ``` code block
+        match = SLRBenchVerifier._PROLOG_BLOCK_PATTERN.search(cleaned)
+        if match:
+            rule_text = match.group(1).strip()
+            if rule_text:
+                return rule_text, False
+
+        # Tier 3: any fenced code block
+        match = SLRBenchVerifier._CODE_BLOCK_PATTERN.search(cleaned)
+        if match:
+            rule_text = match.group(1).strip()
+            if rule_text:
+                return rule_text, False
+
+        # No structured format found → signal garbage / unstructured output
+        return None, False
 
     @staticmethod
     def get_rule_simplicity_bonus(model_response: str) -> float:
@@ -1417,9 +1440,9 @@ class SLRBenchVerifier(VerifierFunction):
             )
             return VerificationResult(score=0.0, extra_scores={"slr_bench_isomorphic": 0.0, "slr_bench_base": 0.0})
 
-        rule = self._extract_prolog_rule(prediction)
+        rule, format_ok = self._extract_prolog_rule(prediction)
 
-        # If the model did not use [RULE]...[/RULE] tags, return 0.0.
+        # If no structured content was found (no tags, no code blocks), return 0.0.
         # This prevents degenerate / garbage outputs from being rewarded.
         if rule is None:
             return VerificationResult(
@@ -1455,7 +1478,7 @@ class SLRBenchVerifier(VerifierFunction):
         reward_judge = (getattr(self.verifier_config, "slr_reward", "isomorphic") or "isomorphic").lower()
         selected_score = min(1.0, max(0.0, judge_scores.get(reward_judge, 0.0)))
         extra_scores = {f"slr_bench_{k}": min(1.0, max(0.0, v)) for k, v in judge_scores.items()}
-        extra_scores["slr_bench_format"] = 1.0  # tags were present
+        extra_scores["slr_bench_format"] = 1.0 if format_ok else 0.0  # 1.0 = [RULE] tags used
 
         return VerificationResult(score=selected_score, extra_scores=extra_scores)
 
