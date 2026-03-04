@@ -1241,51 +1241,10 @@ class SLRBenchVerifier(VerifierFunction):
 
     def __init__(self, verifier_config: SLRBenchVerifierConfig) -> None:
         super().__init__("slr_bench", verifier_config=verifier_config, weight=1.0)
-        # Import the verifier modules directly instead of using evaluate.load().
-        # evaluate.load() uses filelock internally which crashes with
-        # "OSError: Stale file handle" on NFS when many Ray workers race.
-        from open_instruct.slr.PrivateVerifier import _evaluate_with_prolog as _eval_private  # noqa: PLC0415
-        from open_instruct.slr.PublicVerifier import _evaluate_with_prolog as _eval_public  # noqa: PLC0415
+        from open_instruct.slr.slr_verifier import evaluate_prediction  # noqa: PLC0415
 
-        self._eval_private = _eval_private
-        self._eval_public = _eval_public
-        logger.info("SLRBenchVerifier: loaded verifier modules directly (no evaluate.load).")
-
-    def _compute_metric(self, eval_fn, predictions: list, references: list) -> dict:
-        """Run a single verifier's _compute logic using its _evaluate_with_prolog function."""
-        if not isinstance(predictions, list):
-            predictions = [predictions]
-        if len(predictions) != len(references):
-            raise ValueError(
-                f"Number of predictions ({len(predictions)}) and references ({len(references)}) don't match"
-            )
-        timeout = 10 if len(predictions) > 500 else 5
-        eval_inputs = []
-        for i, (prediction, reference) in enumerate(zip(predictions, references)):
-            validation_program = reference.get("validation_program", reference.get("validation program"))
-            eval_config = reference.get(
-                "evaluation_config", {"positive_predicate": "eastbound", "negative_predicate": "westbound"}
-            )
-            if not validation_program:
-                raise ValueError(f"Example {i} does not contain validation program field")
-            eval_inputs.append((prediction, validation_program, eval_config, timeout))
-
-        results = [eval_fn(*inp) for inp in eval_inputs]
-
-        partial_scores = [r["partial_score"] for r in results]
-        correct_count = sum(1 for r in results if r["is_correct"])
-        syntax_valid_count = sum(1 for r in results if r["syntax_valid"])
-
-        accuracy = correct_count / len(predictions) if predictions else 0
-        partial_score = sum(partial_scores) / len(predictions) if partial_scores else 0
-        syntax_score = syntax_valid_count / len(predictions) if predictions else 0
-
-        return {
-            "accuracy": accuracy,
-            "partial_score": partial_score,
-            "syntax_score": syntax_score,
-            "detailed_results": results,
-        }
+        self._evaluate_prediction = evaluate_prediction
+        logger.info("SLRBenchVerifier: loaded unified slr_verifier module.")
 
     # Regex to extract content between [RULE] and [/RULE] tags (case-insensitive, dotall)
     _RULE_TAG_PATTERN = re.compile(r"\[RULE\]\s*(.*?)\s*\[/RULE\]", re.IGNORECASE | re.DOTALL)
@@ -1451,28 +1410,34 @@ class SLRBenchVerifier(VerifierFunction):
 
         rule_simplicity_bonus = self.get_rule_simplicity_bonus(rule)
 
+        validation_program = ref["validation_program"]
+        eval_config = ref.get(
+            "evaluation_config", {"positive_predicate": "eastbound", "negative_predicate": "westbound"}
+        )
+
         judge_scores: dict[str, float] = {}
-        judge_eval_fns = {"isomorphic": self._eval_private, "base": self._eval_public}
-        for judge_name, eval_fn in judge_eval_fns.items():
+        for judge_name, isomorphic in [("isomorphic", True), ("base", False)]:
             try:
-                result = self._compute_metric(eval_fn, predictions=[rule], references=[ref])
+                result = self._evaluate_prediction(
+                    rule, validation_program, eval_config, timeout=5, isomorphic=isomorphic
+                )
             except Exception as e:
-                logger.warning("SLRBenchVerifier %s metric failed: %s", judge_name, e, exc_info=True)
+                logger.warning("[SLRBenchVerifier] %s metric failed: %s", judge_name, e, exc_info=True)
                 judge_scores[judge_name] = 0.0
                 continue
             if result is None:
-                logger.warning("SLRBenchVerifier %s: metric._compute() returned None.", judge_name)
+                logger.warning("[SLRBenchVerifier] %s: evaluate_prediction returned None.", judge_name)
                 judge_scores[judge_name] = 0.0
                 continue
             try:
-                accuracy = result["accuracy"]
+                accuracy = 1.0 if result["is_correct"] else 0.0
                 partial_score = result["partial_score"]
-                syntax_score = result["syntax_score"]
+                syntax_score = 1.0 if result["syntax_valid"] else 0.0
                 judge_scores[judge_name] = self.compute_reward(
                     accuracy, partial_score, syntax_score, rule_simplicity_bonus
                 )
-            except (TypeError, ValueError) as e:
-                logger.warning("SLRBenchVerifier %s could not read score from result %s: %s", judge_name, result, e)
+            except (TypeError, ValueError, KeyError) as e:
+                logger.warning("[SLRBenchVerifier] %s could not read score from result %s: %s", judge_name, result, e)
                 judge_scores[judge_name] = 0.0
 
         reward_judge = (getattr(self.verifier_config, "slr_reward", "isomorphic") or "isomorphic").lower()
