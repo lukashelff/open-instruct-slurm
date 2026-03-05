@@ -63,7 +63,7 @@ mkdir -p "$BASE_DIR/logs" "$BASE_DIR/.cache/nltk_data" "$BASE_DIR/.cache/open_in
 
 # --- 3a. Load secrets (API keys, tokens) from file if it exists. This file is not in the repo and should be created by each user with their own keys.
 if [ -f "$BASE_DIR/secrets.env" ]; then
-source $BASE_DIR/secrets.env
+  source "$BASE_DIR/secrets.env"
 fi
 
 # --- 3b. Pre-pull container image(s) (avoid 8 nodes racing to build SIF) ---
@@ -120,7 +120,8 @@ APPTAINER_ENV=(
   --env "VLLM_ALLOW_LONG_MAX_MODEL_LEN=1"
   --env "VLLM_ALLOW_INSECURE_SERIALIZATION=1"
   --env "VLLM_LOGGING_LEVEL=WARNING"
-  --env "SSL_CERT_FILE="
+  --env "VLLM_WORKER_MULTIPROC_METHOD=spawn"
+  --env "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt" \
   --env "REQUESTS_CA_BUNDLE="
   --env "CURL_CA_BUNDLE="
 )
@@ -149,7 +150,8 @@ GRPO_ARGS="--exp_name $JOB_NAME \
   --pack_length 35840 \
   --model_name_or_path allenai/Olmo-3-7B-Think-DPO \
   --chat_template_name olmo_thinker \
-  --non_stop_penalty True \
+  --non_stop_penalty False \
+  --apply_language_consistency_penalty False \
   --mask_truncated_completions False \
   --temperature 1.0 \
   --ground_truths_key ground_truth \
@@ -163,6 +165,7 @@ GRPO_ARGS="--exp_name $JOB_NAME \
   --vllm_sync_backend nccl \
   --lr_scheduler_type constant \
   --apply_verifiable_reward true \
+  --slr_reward isomorphic \
   --llm_judge_model hosted_vllm/$LLM_JUDGE_MODEL \
   --llm_judge_timeout 1200 \
   --llm_judge_max_tokens 8048 \

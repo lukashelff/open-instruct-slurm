@@ -1432,37 +1432,47 @@ class SLRBenchVerifier(VerifierFunction):
             "evaluation_config", {"positive_predicate": "eastbound", "negative_predicate": "westbound"}
         )
 
-        judge_scores: dict[str, float] = {}
-        for judge_name, isomorphic in [("isomorphic", True), ("base", False)]:
+        # judge_scores: dict[str, float] = {}
+        scores: dict[str, float] = {}
+        scores["slr_bench_format"] = 1.0 if format_ok else 0.0  # 1.0 = [RULE] tags used
+        for judge_name in ["isomorphic", "base"]:
             try:
                 result = self._evaluate_prediction(
-                    rule, validation_program, eval_config, timeout=5, isomorphic=isomorphic
+                    rule, validation_program, eval_config, timeout=5, isomorphic=(judge_name == "isomorphic")
                 )
             except Exception as e:
                 logger.warning("[SLRBenchVerifier] %s metric failed: %s", judge_name, e, exc_info=True)
-                judge_scores[judge_name] = 0.0
+                scores[f"slr_bench_{judge_name}"] = 0.0
                 continue
             if result is None:
                 logger.warning("[SLRBenchVerifier] %s: evaluate_prediction returned None.", judge_name)
-                judge_scores[judge_name] = 0.0
+                scores[f"slr_bench_{judge_name}"] = 0.0
                 continue
             try:
                 accuracy = 1.0 if result["is_correct"] else 0.0
                 partial_score = result["partial_score"]
                 syntax_score = 1.0 if result["syntax_valid"] else 0.0
-                judge_scores[judge_name] = self.compute_reward(
+                scores[f"slr_bench_{judge_name}"] = self.compute_reward(
                     accuracy, partial_score, syntax_score, rule_simplicity_bonus
                 )
+                if judge_name == 'isomorphic':
+                    scores["slr_bench_solved"] = 1.0 if accuracy == 1.0 else 0.0
+
             except (TypeError, ValueError, KeyError) as e:
                 logger.warning("[SLRBenchVerifier] %s could not read score from result %s: %s", judge_name, result, e)
-                judge_scores[judge_name] = 0.0
+                scores[f"slr_bench_{judge_name}"] = 0.0
 
-        reward_judge = (getattr(self.verifier_config, "slr_reward", "isomorphic") or "isomorphic").lower()
-        selected_score = min(1.0, max(0.0, judge_scores.get(reward_judge, 0.0)))
-        extra_scores = {f"slr_bench_{k}": min(1.0, max(0.0, v)) for k, v in judge_scores.items()}
-        extra_scores["slr_bench_format"] = 1.0 if format_ok else 0.0  # 1.0 = [RULE] tags used
+        reward_model = (getattr(self.verifier_config, "slr_reward", "isomorphic") or "isomorphic").lower()
+        if reward_model not in ["isomorphic", "base"]:
+            logger.warning(
+                "[SLRBenchVerifier] Invalid slr_reward config '%s', defaulting to 'isomorphic'. Must be 'isomorphic' or 'base'.",
+                reward_model,
+            )
+            reward_model = "isomorphic"
+        selected_score = scores.get(f"slr_bench_{reward_model}", 0.0)
 
-        return VerificationResult(score=selected_score, extra_scores=extra_scores)
+
+        return VerificationResult(score=selected_score, extra_scores=scores)
 
     @classmethod
     def get_config_class(cls) -> type:
@@ -1526,25 +1536,51 @@ def soft_format_reward_func(responses: list[str], reward_scale: float = 1.0) -> 
     return [reward_scale if match else 0.0 for match in matches]
 
 
-def language_consistency_score(text: str, ngram_size: int = 4, repetition_cap: float = 0.35) -> float:
+# Pre-compiled regexes for language_consistency_score (module-level for speed).
+_LC_NON_LATIN_RE = re.compile(
+    r"[^\x20-\x7E"  # ASCII printable
+    r"\u00A0-\u024F"  # Latin-1 Supplement + Extended A/B
+    r"\u0370-\u03FF"  # Greek (math symbols)
+    r"\u2000-\u206F"  # General Punctuation
+    r"\u2190-\u27FF"  # Arrows, Math Operators
+    r"\uFE00-\uFE0F"  # Variation selectors
+    r"\n\t]"
+)
+_LC_CJK_RE = re.compile(
+    r"[\u3000-\u9FFF"  # CJK Unified, Katakana, Hiragana, CJK symbols
+    r"\uFF00-\uFFEF"  # Fullwidth Forms (：, ，, etc.)
+    r"\u0400-\u04FF"  # Cyrillic
+    r"\u0600-\u06FF"  # Arabic
+    r"]"
+)
+_LC_COLON_STREAM_RE = re.compile(r"[:\uFF1A\n]{3,}")
+
+
+def language_consistency_score(text: str, ngram_size: int = 4, repetition_cap: float = 0.88) -> float:
     """Score how linguistically consistent a response is, in [0, 1].
 
-    Detects two common RLVR degeneration modes:
+    Detects three common RLVR degeneration modes:
 
-    1. **Script contamination** — non-Latin characters (CJK, Arabic, Cyrillic,
-       etc.) appearing in what should be English + Prolog output.  A small
-       allowance is made for Unicode math symbols and occasional accented chars.
-    2. **Token repetition** — long runs of repeated n-grams (e.g. colon-streams,
-       punctuation loops) that inflate token count without content.
+    1. **Script contamination** — CJK, Arabic, or Cyrillic characters appearing
+       in what should be English + Prolog output.  Even a small fraction (>0.5%)
+       of strong-signal scripts (CJK/Cyrillic/Arabic) triggers a penalty, while
+       other non-Latin chars use a broader 3% threshold.
+    2. **Token repetition** — long runs of repeated n-grams that inflate token
+       count without content.  The cap is set to 0.88 (not 0.80) because
+       Prolog/ILP reasoning naturally repeats predicate names (``has_car``,
+       ``has_wall``, etc.).
+    3. **Colon/newline streams** — degenerate outputs often contain long runs of
+       colons (``:``, ``：``) and bare newlines with no content.
 
-    The two sub-scores are multiplied so that *either* failure mode drags the
-    overall score toward 0.
+    All three sub-scores are multiplied so *any* failure mode drags the overall
+    score toward 0.
 
     Args:
         text: The full decoded model response (including thinking section).
         ngram_size: Size of character n-grams for repetition detection.
         repetition_cap: Fraction of repeated n-grams above which the score
-            starts dropping.  0.35 is lenient enough for natural prose.
+            starts dropping.  0.88 accommodates the natural repetition of
+            Prolog predicate names in long chain-of-thought outputs.
 
     Returns:
         float in [0, 1].  1.0 = clean, 0.0 = fully degenerate.
@@ -1552,40 +1588,23 @@ def language_consistency_score(text: str, ngram_size: int = 4, repetition_cap: f
     if not text or len(text.strip()) < 20:
         return 1.0  # too short to judge — don't penalise
 
-    # --- 1. Script consistency (Latin + common programming symbols) -----------
-    # Count characters that are clearly *not* Latin-script / ASCII / common math.
-    # We allow: ASCII, Latin-Extended (accents), Greek (math), common symbols.
-    n_chars = 0
-    n_foreign = 0
-    for ch in text:
-        cp = ord(ch)
-        if cp < 0x20:  # control chars — skip
-            continue
-        n_chars += 1
-        # Allow: Basic Latin, Latin-1 Supplement, Latin Extended-A/B,
-        #        Greek and Coptic (math), General Punctuation, Math Operators,
-        #        Miscellaneous Symbols, common whitespace.
-        if cp <= 0x024F:  # Basic Latin through Latin Extended-B
-            continue
-        if 0x0370 <= cp <= 0x03FF:  # Greek (α, β, θ, etc.)
-            continue
-        if 0x2000 <= cp <= 0x206F:  # General Punctuation
-            continue
-        if 0x2190 <= cp <= 0x27FF:  # Arrows, Math Operators, Misc Technical
-            continue
-        if 0xFE00 <= cp <= 0xFE0F:  # Variation selectors
-            continue
-        n_foreign += 1
+    n_chars = len(text)
 
-    if n_chars == 0:
-        return 1.0
-    foreign_ratio = n_foreign / n_chars
-    # Generous threshold: up to 5% foreign is fine (e.g. occasional emoji).
-    # Beyond that, score drops linearly to 0 at 40% foreign.
-    script_score = 1.0 if foreign_ratio <= 0.05 else max(0.0, 1.0 - (foreign_ratio - 0.05) / 0.35)
+    # --- 1. Script consistency ------------------------------------------------
+    # CJK / Cyrillic / Arabic should *never* appear in Prolog reasoning.  Use a
+    # very tight threshold (0.5%) for these strong-signal scripts.
+    n_cjk = len(_LC_CJK_RE.findall(text))
+    cjk_ratio = n_cjk / max(n_chars, 1)
+    if cjk_ratio > 0.005:
+        # Drop linearly from 1.0 at 0.5% to 0.0 at 5%.
+        script_score = max(0.0, 1.0 - (cjk_ratio - 0.005) / 0.045)
+    else:
+        # Broader non-Latin check (emoji, symbols, etc.) — more generous.
+        n_foreign = len(_LC_NON_LATIN_RE.findall(text))
+        foreign_ratio = n_foreign / max(n_chars, 1)
+        script_score = 1.0 if foreign_ratio <= 0.03 else max(0.0, 1.0 - (foreign_ratio - 0.03) / 0.20)
 
     # --- 2. N-gram repetition ------------------------------------------------
-    # Excessive character-level n-gram repetition signals degenerate loops.
     chars = text.replace("\n", " ").replace("\t", " ")
     if len(chars) < ngram_size + 10:
         rep_score = 1.0
@@ -1593,17 +1612,22 @@ def language_consistency_score(text: str, ngram_size: int = 4, repetition_cap: f
         ngrams: list[str] = [chars[i : i + ngram_size] for i in range(len(chars) - ngram_size + 1)]
         total = len(ngrams)
         unique = len(set(ngrams))
-        repetition_ratio = 1.0 - (unique / total)  # 0 = all unique, 1 = all same
+        repetition_ratio = 1.0 - (unique / total)
         if repetition_ratio <= repetition_cap:
             rep_score = 1.0
         else:
             rep_score = max(0.0, 1.0 - (repetition_ratio - repetition_cap) / (1.0 - repetition_cap))
 
-    return script_score * rep_score
+    # --- 3. Colon/newline stream detector ------------------------------------
+    colon_noise = len(_LC_COLON_STREAM_RE.findall(text))
+    colon_ratio = colon_noise / max(n_chars, 1)
+    colon_score = 1.0 if colon_ratio < 0.01 else max(0.0, 1.0 - (colon_ratio - 0.01) / 0.05)
+
+    return script_score * rep_score * colon_score
 
 
 def language_consistency_penalty(
-    responses: list[str], penalty_scale: float = 1.0, ngram_size: int = 4, repetition_cap: float = 0.35
+    responses: list[str], penalty_scale: float = 1.0, ngram_size: int = 4, repetition_cap: float = 0.88
 ) -> list[float]:
     """Compute per-response language consistency scores for a batch.
 
@@ -1799,11 +1823,13 @@ class RewardConfig:
                     metrics[f"objective/{key}_reward"] = np_value.mean()
                     metrics[f"objective/{key}_correct_rate"] = (np_value > 0.0).mean()
 
+            # Always compute language consistency for tracking; only apply as penalty when configured.
+            lc_scores = language_consistency_penalty(decoded_responses)
+            metrics["val/language_consistency"] = np.array(lc_scores).mean()
+            metrics["val/language_consistency_hist"] = np.array(lc_scores)
             if self.apply_language_consistency_penalty:
-                lc_scores = language_consistency_penalty(decoded_responses)
                 for i in range(len(scores)):
                     scores[i] = scores[i] * lc_scores[i]
-                metrics["val/language_consistency"] = np.array(lc_scores).mean()
 
             if self.non_stop_penalty:
                 assert len(finish_reasons) == len(scores)

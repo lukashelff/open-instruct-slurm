@@ -8,7 +8,7 @@
 #SBATCH --gpus-per-node=8
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=112
-#SBATCH --mem=1T
+#SBATCH --mem=0
 #SBATCH --time=100:00:00
 #SBATCH --output=logs/%x_%j/output.out
 #SBATCH --error=logs/%x_%j/error.err
@@ -83,7 +83,8 @@ APPTAINER_ENV=(
   --env "VLLM_ALLOW_LONG_MAX_MODEL_LEN=1"
   --env "VLLM_ALLOW_INSECURE_SERIALIZATION=1"
   --env "VLLM_LOGGING_LEVEL=WARNING"
-  --env "SSL_CERT_FILE="
+  --env "VLLM_WORKER_MULTIPROC_METHOD=spawn"
+  --env "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt" \
   --env "REQUESTS_CA_BUNDLE="
   --env "CURL_CA_BUNDLE="
 )
@@ -113,6 +114,7 @@ GRPO_ARGS="--exp_name $JOB_NAME \
   --model_name_or_path allenai/Olmo-3-7B-Think-DPO \
   --chat_template_name olmo_thinker \
   --non_stop_penalty False \
+  --apply_language_consistency_penalty False \
   --mask_truncated_completions False \
   --temperature 1.0 \
   --ground_truths_key ground_truth \
