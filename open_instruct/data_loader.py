@@ -374,6 +374,10 @@ class StreamingDataLoaderConfig:
     # Max length verifier
     max_length_verifier_max_length: int = 32768
 
+    # SLR-Bench verifier
+    slr_reward: Literal["isomorphic", "base"] = "isomorphic"
+    """Which SLR judge score to use for training reward: 'isomorphic' or 'base'."""
+
     # Non stop penalty
     non_stop_penalty: bool = False
     non_stop_penalty_value: float = 0.0
