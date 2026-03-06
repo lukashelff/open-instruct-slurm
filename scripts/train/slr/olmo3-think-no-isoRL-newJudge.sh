@@ -8,7 +8,7 @@
 #   - Judge node runs vLLM in the official vLLM container (latest model support)
 #   - All other nodes (+ code API on judge) use the open_instruct container
 #
-#SBATCH --job-name=RLVR-soofi-Olmo-IsomorphicRL
+#SBATCH --job-name=RLVR-Olmo-no-IsoRL
 #SBATCH --partition=all
 #SBATCH --nodes=8
 #SBATCH --gpus-per-node=8
@@ -20,10 +20,10 @@
 #SBATCH --error=logs/%x_%j/error.err
 #SBATCH --qos=normal
 #SBATCH --open-mode=append
-#SBATCH --exclude=cn13,cn06,cn05
+#SBATCH --exclude=cn13,cn06,cn05,cn34 
 
 # --- 1. Configuration ---
-JOB_NAME="RLVR-soofi-Olmo-IsomorphicRL"
+JOB_NAME="RLVR-Olmo-no-IsoRL"
 BASE_DIR="/mnt/vast/home/lh22zyta/shortcut-RL/open-instruct"
 CONTAINER_IMAGE="docker://helffml/open_instruct_dev:slr"
 VLLM_CONTAINER_IMAGE="docker://vllm/vllm-openai:qwen3_5"  # Official vLLM image (latest model support)
@@ -107,7 +107,7 @@ APPTAINER_ENV=(
   --env "WANDB_API_KEY=$WANDB_API_KEY"
   --env "RAY_ADDRESS=$RAY_ADDRESS"
   --env "RAY_PORT=$RAY_PORT"
-  --env "RAY_HEAD_PROCID=0"
+  --env "RAY_HEAD_PROCID=1"
   --env "RAY_DEDUP_LOGS=0"
   --env "HOSTED_VLLM_API_BASE=$HOSTED_VLLM_API_BASE"
   --env "CODE_API_URL=$CODE_API_URL"
