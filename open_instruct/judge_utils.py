@@ -237,8 +237,7 @@ def extract_json_score_with_fallback(score_str: str) -> "tuple[str, float]":
                 raise ValueError() from e
         return reasoning, score
     except (json.JSONDecodeError, TypeError, ValueError):
-        logger.warning(f"Could not parse score from due to invalid json: {score_str}, defaulting to 0.0")
-        return score_str, 0.0
+        raise ValueError(f"Could not parse score, invalid json: {score_str}")
 
 
 def extract_score_with_fallback_max_10(score_str: str) -> "tuple[str, float]":

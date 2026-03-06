@@ -739,7 +739,7 @@ class LMJudgeVerifier(VerifierFunction):
         score = 0.0
 
         if not completion:
-            print("No completion received from the model.")
+            logger.error(f"[LLM Judge {self.name}] No completion received from the model.")
             return reasoning, score
 
         try:
@@ -747,12 +747,18 @@ class LMJudgeVerifier(VerifierFunction):
             pattern = r"<think>\s*.*?\s*</think>\s*"
             content = re.sub(pattern, "", completion.choices[0].message.content, flags=re.DOTALL)
             content = content.replace("<answer>", "").replace("</answer>", "")
-            reasoning, score = self.extractor(content)
+            try:
+                reasoning, score = self.extractor(content)
+            except ValueError as e:
+                logger.warning(f"[LLM Judge {self.name}] Defaulting to 0.0 due to failed score extraction: {str(e)}")
+                score, reasoning = 0.0, content
 
         except Exception as e:
-            print(f"Error processing model response: {str(e)}")
+            logger.error(f"[LLM Judge {self.name}] Error processing model response: {str(e)}, defaulting to 0.0")
             if hasattr(completion, "choices") and completion.choices is not None and len(completion.choices) > 0:
-                print(f"Response content: {getattr(completion.choices[0].message, 'content', 'No content available')}")
+                logger.error(
+                    f"Response content: {getattr(completion.choices[0].message, 'content', 'No content available')}"
+                )
 
         return reasoning, score
 
@@ -1455,7 +1461,7 @@ class SLRBenchVerifier(VerifierFunction):
                 scores[f"slr_bench_{judge_name}"] = self.compute_reward(
                     accuracy, partial_score, syntax_score, rule_simplicity_bonus
                 )
-                if judge_name == 'isomorphic':
+                if judge_name == "isomorphic":
                     scores["slr_bench_solved"] = 1.0 if accuracy == 1.0 else 0.0
 
             except (TypeError, ValueError, KeyError) as e:
@@ -1470,7 +1476,6 @@ class SLRBenchVerifier(VerifierFunction):
             )
             reward_model = "isomorphic"
         selected_score = scores.get(f"slr_bench_{reward_model}", 0.0)
-
 
         return VerificationResult(score=selected_score, extra_scores=scores)
 
