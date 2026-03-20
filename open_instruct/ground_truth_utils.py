@@ -1375,7 +1375,7 @@ class SLRBenchVerifier(VerifierFunction):
         syntax_score: float,
         rule_simplicity_bonus: float,
         k: int = 4,
-        partial_gate: float = 0,
+        partial_gate: float = 0.5,
     ) -> float:
         """Compute reward in [0, 1] for ILP rule induction.
 
@@ -1384,7 +1384,7 @@ class SLRBenchVerifier(VerifierFunction):
           and partial score. No free points for syntax or simplicity alone,
           which previously created a ~1.1 floor that incentivised garbage.
         - **Partial credit with soft gate**: ``partial_score`` is raised to
-          the power *k* (default 4) so only rules covering most examples get
+          the power *k* (default 1) so only rules covering most examples get
           meaningful partial credit.  Below *partial_gate* the reward is 0.
         - **Simplicity as a multiplicative modifier** (not additive): a small
           bonus/penalty that scales the correctness reward.  A perfect rule
@@ -1400,21 +1400,22 @@ class SLRBenchVerifier(VerifierFunction):
         Returns:
             float: reward in [0, 1].
         """
-        if accuracy == 1.0:
-            # Full marks.  Apply a small simplicity modifier [0.95, 1.0]
-            # so that among equally correct rules, shorter ones are preferred.
-            return 0.95 + 0.05 * rule_simplicity_bonus
+        return partial_score
+        # if accuracy == 1.0:
+        #     # Full marks.  Apply a small simplicity modifier [0.95, 1.0]
+        #     # so that among equally correct rules, shorter ones are preferred.
+        #     return 0.95 + 0.05 * rule_simplicity_bonus
 
-        # Partial credit: only when the rule covers a meaningful fraction.
-        if partial_score < partial_gate:
-            return 0.0
+        # # Partial credit: only when the rule covers a meaningful fraction.
+        # if partial_score < partial_gate:
+        #     return 0.0
 
-        # partial_score**k compresses the range: 0.5→0.016, 0.8→0.26, 0.95→0.74
-        # Scale into [0, 0.9] so partial is always strictly below full accuracy.
-        base = partial_score**k
-        # Multiplicative simplicity modifier: scales base by [0.9, 1.0]
-        simplicity_mod = 0.9 + 0.1 * rule_simplicity_bonus
-        return min(0.9, base * simplicity_mod)
+        # # partial_score**k compresses the range: 0.5→0.016, 0.8→0.26, 0.95→0.74
+        # # Scale into [0, 0.9] so partial is always strictly below full accuracy.
+        # base = partial_score**k
+        # # Multiplicative simplicity modifier: scales base by [0.9, 1.0]
+        # simplicity_mod = 0.9 + 0.1 * rule_simplicity_bonus
+        # return min(0.9, base * simplicity_mod)
 
     def __call__(
         self,
