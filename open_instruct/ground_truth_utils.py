@@ -1263,49 +1263,62 @@ class SLRBenchVerifier(VerifierFunction):
     _CODE_BLOCK_PATTERN = re.compile(r"```(?:[a-zA-Z0-9]*\n)?(.*?)```", re.DOTALL)
 
     @staticmethod
-    def _extract_prolog_rule(prediction: str) -> tuple[str, bool] | tuple[None, bool]:
+    def _extract_prolog_rule(prediction: str, parsing: str = 'extract_prolog_code') -> tuple[str, bool] | tuple[None, bool]:
         """Extract the Prolog rule from model output.
 
-        Uses a tiered extraction strategy (after stripping the thinking section):
-          1. ``[RULE]...[/RULE]`` tags  → (content, True)   format compliant
-          2. ````prolog...```` block    → (content, False)  code-block fallback
-          3. Any fenced code block      → (content, False)  code-block fallback
-          4. Nothing found              → (None, False)     return 0.0 to prevent
-             degenerate / garbage outputs being accidentally rewarded.
+        After stripping the thinking section, applies one of two extraction modes
+        controlled by ``parsing``:
+
+        ``'extract_prolog_code'``
+            Runs ``parse_simple`` to strip surrounding prose, then returns the
+            cleaned text with ``format_ok=False``.
+
+        ``'extract_code_block'``
+            Uses a tiered extraction strategy:
+
+            1. ``[RULE]...[/RULE]`` tags  → (content, True)   format compliant
+            2. ````prolog...```` block    → (content, False)  code-block fallback
+            3. Any fenced code block      → (content, False)  code-block fallback
+            4. Nothing found              → (None, False)     prevents degenerate
+               outputs from being accidentally rewarded.
 
         Returns a tuple ``(rule_text, format_ok)`` where ``format_ok`` is
-        ``True`` only when the preferred ``[RULE]`` tags were used.
+        ``True`` only when ``'extract_code_block'`` mode finds ``[RULE]`` tags.
         """
+        if parsing not in ['extract_code_block', 'extract_prolog_code']:
+            raise ValueError("Invalid parsing style. Must be 'extract_code_block' or 'extract_prolog_code'.")
+
         cleaned = remove_thinking_section(prediction)
         if not cleaned.strip():
             return None, False
 
-        # just parse all prolog code
-        cleaned = parse_simple(cleaned)  # additional cleaning to remove irrelevant text
-        
-        # parse code blocks or rule tags
-        # cleaned = extract_code_block(cleaned)
-        
-        # # Tier 1: explicit [RULE] tags
-        # match = SLRBenchVerifier._RULE_TAG_PATTERN.search(cleaned)
-        # if match:
-        #     rule_text = match.group(1).strip()
-        #     if rule_text:
-        #         return rule_text, True
+        if parsing == 'extract_prolog_code':
+            # Extracts all prolog code from the model answer
+            cleaned = parse_simple(cleaned)  # additional cleaning to remove irrelevant text
+            return cleaned, False
+        elif parsing == 'extract_code_block':
+            # First try to find explicit [RULE] tags, which is the preferred format.  If not found, fall back to code block extraction.
+            
+            # Tier 1: explicit [RULE] tags
+            match = SLRBenchVerifier._RULE_TAG_PATTERN.search(cleaned)
+            if match:
+                rule_text = match.group(1).strip()
+                if rule_text:
+                    return rule_text, True
 
-        # # Tier 2: ```prolog ... ``` code block
-        # match = SLRBenchVerifier._PROLOG_BLOCK_PATTERN.search(cleaned)
-        # if match:
-        #     rule_text = match.group(1).strip()
-        #     if rule_text:
-        #         return rule_text, False
+            # Tier 2: ```prolog ... ``` code block
+            match = SLRBenchVerifier._PROLOG_BLOCK_PATTERN.search(cleaned)
+            if match:
+                rule_text = match.group(1).strip()
+                if rule_text:
+                    return rule_text, True
 
-        # # Tier 3: any fenced code block
-        # match = SLRBenchVerifier._CODE_BLOCK_PATTERN.search(cleaned)
-        # if match:
-        #     rule_text = match.group(1).strip()
-        #     if rule_text:
-        #         return rule_text, False
+            # Tier 3: any fenced code block
+            match = SLRBenchVerifier._CODE_BLOCK_PATTERN.search(cleaned)
+            if match:
+                rule_text = match.group(1).strip()
+                if rule_text:
+                    return rule_text, True
 
         return cleaned, False
 

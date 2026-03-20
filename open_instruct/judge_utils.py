@@ -207,37 +207,39 @@ def extract_score_web_instruct(score_str: str) -> "tuple[str, float]":
 def extract_json_score_with_fallback(score_str: str) -> "tuple[str, float]":
     """Extractor based on json score with fallback"""
     try:
-        # Strip markdown code blocks if present
+        # Strip markdown code fences if present.
         cleaned_str = score_str.strip()
-        if cleaned_str.startswith("```json"):
-            cleaned_str = cleaned_str[7:]  # Remove ```json
-        elif cleaned_str.startswith("```"):
-            cleaned_str = cleaned_str[3:]  # Remove ```
-
-        if cleaned_str.endswith("```"):
-            cleaned_str = cleaned_str[:-3]  # Remove trailing ```
-
-        # escape newlines
-        cleaned_str = cleaned_str.replace("\r\n", "\n").replace("\n", "\\n")
-        # escape backslashes
-        cleaned_str = re.sub(r'\\(?!["\\/bfnrtu])', r"\\\\", cleaned_str)
-
+        cleaned_str = re.sub(r"^```(?:json)?\s*", "", cleaned_str, flags=re.IGNORECASE)
+        cleaned_str = re.sub(r"\s*```$", "", cleaned_str)
         cleaned_str = cleaned_str.strip()
 
-        try:
-            data = json.loads(cleaned_str)
-            reasoning = data.get("REASONING", "")
-            score = float(data.get("SCORE", 0.0))
-        except json.JSONDecodeError as e:
-            score_match = re.search(r'"SCORE"\s*:\s*"?([0-9]+(?:\.[0-9]+)?)"?', cleaned_str)
-            if score_match:
-                score = float(score_match.group(1))
-                reasoning = cleaned_str
-            else:
-                raise ValueError() from e
+        # Some judges include explanatory text around the JSON payload.
+        candidate_json_strs = [cleaned_str]
+        json_obj_match = re.search(r"\{.*\}", cleaned_str, flags=re.DOTALL)
+        if json_obj_match:
+            json_obj_str = json_obj_match.group(0).strip()
+            if json_obj_str != cleaned_str:
+                candidate_json_strs.insert(0, json_obj_str)
+
+        for candidate in candidate_json_strs:
+            try:
+                data = json.loads(candidate)
+                reasoning = data.get("REASONING", "")
+                score = float(data.get("SCORE", 0.0))
+                return reasoning, score
+            except json.JSONDecodeError:
+                continue
+
+        score_match = re.search(r'[\["\s]?SCORE[\]"\s]?\s*:\s*"?([0-9]+(?:\.[0-9]+)?)"?', cleaned_str)
+        if score_match:
+            score = float(score_match.group(1))
+            reasoning = cleaned_str
+            logger.warning("[LLM JUDGE] JSON parsing failed, but extracted score using regex.")
+        else:
+            raise ValueError()
         return reasoning, score
-    except (json.JSONDecodeError, TypeError, ValueError):
-        raise ValueError(f"Could not parse score, invalid json: {score_str}")
+    except (json.JSONDecodeError, TypeError, ValueError) as err:
+        raise ValueError(f"[LLM JUDGE] Could not parse score, invalid json: {score_str}") from err
 
 
 def extract_score_with_fallback_max_10(score_str: str) -> "tuple[str, float]":
