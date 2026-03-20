@@ -95,6 +95,7 @@ check_all :- forall((pos({vars});neg({vars})), check({vars})).
         f.write(full_program)
         temp_file = f.name
 
+    result = None
     try:
         eval_start_time = time.time()
         # Execute the Prolog program
@@ -124,7 +125,7 @@ check_all :- forall((pos({vars});neg({vars})), check({vars})).
             "is_correct": False,
             "partial_score": 0.0,
             "syntax_valid": False,
-            "error": "Evaluation timed out after {timeout} seconds for rule: '{r}'",
+            "error": f"Evaluation timed out after {timeout} seconds for rule: '{r}'",
         }
     except Exception as e:
         logger.warning(f"[SLR Reward Model] Error evaluating rule '{prediction}': {e}")
@@ -132,7 +133,7 @@ check_all :- forall((pos({vars});neg({vars})), check({vars})).
             "is_correct": False,
             "partial_score": 0.0,
             "syntax_valid": False,
-            "error": f"Error evaluating rule '{prediction}' returns: '{result.stdout.strip() if result else 'No error message'}' with error: {e}",
+            "error": f"Error evaluating rule '{prediction}' returns: '{result.stdout.strip() if result is not None else 'No error message'}' with error: {e}",
         }
     finally:
         if os.path.exists(temp_file):

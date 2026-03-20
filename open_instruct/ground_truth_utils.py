@@ -39,6 +39,7 @@ from open_instruct.math_utils import (
 )
 from open_instruct.rubrics import RUBRIC_SCORING_PROMPT
 from open_instruct.rubrics.run_utils import extract_json_from_response, run_litellm_async
+from open_instruct.slr.parsing import extract_code_block, parse_simple, parse_complex
 from open_instruct.utils import extract_final_answer
 
 logger = logger_utils.setup_logger(__name__)
@@ -1250,7 +1251,10 @@ class SLRBenchVerifier(VerifierFunction):
         from open_instruct.slr.slr_verifier import evaluate_prediction  # noqa: PLC0415
 
         self._evaluate_prediction = evaluate_prediction
-        logger.info("SLRBenchVerifier: loaded unified slr_verifier module.")
+        logger.info(
+            "SLRBenchVerifier: loaded unified slr_verifier module. Training reward uses slr_reward='%s'.",
+            verifier_config.slr_reward,
+        )
 
     # Regex to extract content between [RULE] and [/RULE] tags (case-insensitive, dotall)
     _RULE_TAG_PATTERN = re.compile(r"\[RULE\]\s*(.*?)\s*\[/RULE\]", re.IGNORECASE | re.DOTALL)
@@ -1276,29 +1280,34 @@ class SLRBenchVerifier(VerifierFunction):
         if not cleaned.strip():
             return None, False
 
-        # Tier 1: explicit [RULE] tags
-        match = SLRBenchVerifier._RULE_TAG_PATTERN.search(cleaned)
-        if match:
-            rule_text = match.group(1).strip()
-            if rule_text:
-                return rule_text, True
+        # just parse all prolog code
+        cleaned = parse_simple(cleaned)  # additional cleaning to remove irrelevant text
+        
+        # parse code blocks or rule tags
+        # cleaned = extract_code_block(cleaned)
+        
+        # # Tier 1: explicit [RULE] tags
+        # match = SLRBenchVerifier._RULE_TAG_PATTERN.search(cleaned)
+        # if match:
+        #     rule_text = match.group(1).strip()
+        #     if rule_text:
+        #         return rule_text, True
 
-        # Tier 2: ```prolog ... ``` code block
-        match = SLRBenchVerifier._PROLOG_BLOCK_PATTERN.search(cleaned)
-        if match:
-            rule_text = match.group(1).strip()
-            if rule_text:
-                return rule_text, False
+        # # Tier 2: ```prolog ... ``` code block
+        # match = SLRBenchVerifier._PROLOG_BLOCK_PATTERN.search(cleaned)
+        # if match:
+        #     rule_text = match.group(1).strip()
+        #     if rule_text:
+        #         return rule_text, False
 
-        # Tier 3: any fenced code block
-        match = SLRBenchVerifier._CODE_BLOCK_PATTERN.search(cleaned)
-        if match:
-            rule_text = match.group(1).strip()
-            if rule_text:
-                return rule_text, False
+        # # Tier 3: any fenced code block
+        # match = SLRBenchVerifier._CODE_BLOCK_PATTERN.search(cleaned)
+        # if match:
+        #     rule_text = match.group(1).strip()
+        #     if rule_text:
+        #         return rule_text, False
 
-        # No structured format found → signal garbage / unstructured output
-        return None, False
+        return cleaned, False
 
     @staticmethod
     def get_rule_simplicity_bonus(model_response: str) -> float:
@@ -1352,8 +1361,8 @@ class SLRBenchVerifier(VerifierFunction):
         partial_score: float,
         syntax_score: float,
         rule_simplicity_bonus: float,
-        k: int = 6,
-        partial_gate: float = 0.5,
+        k: int = 4,
+        partial_gate: float = 0,
     ) -> float:
         """Compute reward in [0, 1] for ILP rule induction.
 
@@ -1362,7 +1371,7 @@ class SLRBenchVerifier(VerifierFunction):
           and partial score. No free points for syntax or simplicity alone,
           which previously created a ~1.1 floor that incentivised garbage.
         - **Partial credit with soft gate**: ``partial_score`` is raised to
-          the power *k* (default 6) so only rules covering most examples get
+          the power *k* (default 4) so only rules covering most examples get
           meaningful partial credit.  Below *partial_gate* the reward is 0.
         - **Simplicity as a multiplicative modifier** (not additive): a small
           bonus/penalty that scales the correctness reward.  A perfect rule
@@ -1407,7 +1416,7 @@ class SLRBenchVerifier(VerifierFunction):
         and track both in extra_scores for wandb logging.
         """
         if not prediction:
-            return VerificationResult(score=0.0, extra_scores={"slr_bench_isomorphic": 0.0, "slr_bench_base": 0.0})
+            return VerificationResult(score=0.0, extra_scores={"slr_bench_isomorphic": 0.0, "slr_bench_base": 0.0, "slr_bench_format": 0.0, "slr_reward_hacking": 0.0})
         ref = label
         if isinstance(ref, str):
             try:
@@ -1420,7 +1429,7 @@ class SLRBenchVerifier(VerifierFunction):
                 type(ref).__name__,
                 ref,
             )
-            return VerificationResult(score=0.0, extra_scores={"slr_bench_isomorphic": 0.0, "slr_bench_base": 0.0})
+            return VerificationResult(score=0.0, extra_scores={"slr_bench_isomorphic": 0.0, "slr_bench_base": 0.0, "slr_bench_format": 0.0, "slr_reward_hacking": 0.0})
 
         rule, format_ok = self._extract_prolog_rule(prediction)
 
@@ -1428,7 +1437,7 @@ class SLRBenchVerifier(VerifierFunction):
         # This prevents degenerate / garbage outputs from being rewarded.
         if rule is None:
             return VerificationResult(
-                score=0.0, extra_scores={"slr_bench_isomorphic": 0.0, "slr_bench_base": 0.0, "slr_bench_format": 0.0}
+                score=0.0, extra_scores={"slr_bench_isomorphic": 0.0, "slr_bench_base": 0.0, "slr_bench_format": 0.0, "slr_reward_hacking": 0.0}
             )
 
         rule_simplicity_bonus = self.get_rule_simplicity_bonus(rule)
@@ -1468,10 +1477,13 @@ class SLRBenchVerifier(VerifierFunction):
                 logger.warning("[SLRBenchVerifier] %s could not read score from result %s: %s", judge_name, result, e)
                 scores[f"slr_bench_{judge_name}"] = 0.0
 
-        reward_model = (getattr(self.verifier_config, "slr_reward", "isomorphic") or "isomorphic").lower()
+        scores["slr_reward_hacking"] =  scores["slr_bench_base"] - scores["slr_bench_isomorphic"]
+        
+        reward_model = self.verifier_config.slr_reward.lower()
         if reward_model not in ["isomorphic", "base"]:
-            logger.warning(
-                "[SLRBenchVerifier] Invalid slr_reward config '%s', defaulting to 'isomorphic'. Must be 'isomorphic' or 'base'.",
+            logger.error(
+                "[SLRBenchVerifier] Invalid slr_reward value '%s' in SLRBenchVerifierConfig. "
+                "Must be 'isomorphic' or 'base'. Reverting to 'isomorphic'.",
                 reward_model,
             )
             reward_model = "isomorphic"
@@ -1706,6 +1718,7 @@ async def apply_verifiable_reward(
 
     response_rewards = [0] * len(responses)
     response_per_func_rewards = [{} for _ in range(len(responses))]
+    response_extra_scores = [{} for _ in range(len(responses))]
 
     for result, metadata in zip(reward_results, task_metadata):
         response_idx = metadata["response_idx"]
@@ -1723,10 +1736,10 @@ async def apply_verifiable_reward(
         # Collect extra tracking scores (e.g., both SLR judges)
         if hasattr(result, "extra_scores") and result.extra_scores:
             for key, val in result.extra_scores.items():
-                response_per_func_rewards[response_idx].setdefault(key, 0.0)
-                response_per_func_rewards[response_idx][key] += reward_mult * val * reward_weight
+                response_extra_scores[response_idx].setdefault(key, 0.0)
+                response_extra_scores[response_idx][key] += reward_mult * val * reward_weight
 
-    return response_rewards, response_per_func_rewards
+    return response_rewards, response_per_func_rewards, response_extra_scores
 
 
 @dataclasses.dataclass
@@ -1784,7 +1797,7 @@ class RewardConfig:
                 metrics["val/format_scores"] = np.array(format_scores).mean()
 
             if self.apply_verifiable_reward:
-                verifiable_rewards, per_func_rewards = await apply_verifiable_reward(
+                verifiable_rewards, per_func_rewards, extra_score_rewards = await apply_verifiable_reward(
                     self.verifier_functions,
                     responses,
                     decoded_responses,
@@ -1827,6 +1840,14 @@ class RewardConfig:
                     np_value = np.array(value)
                     metrics[f"objective/{key}_reward"] = np_value.mean()
                     metrics[f"objective/{key}_correct_rate"] = (np_value > 0.0).mean()
+
+                extra_score_lists: dict[str, list] = defaultdict(list)
+                for reward_dict in extra_score_rewards:
+                    for key, value in reward_dict.items():
+                        extra_score_lists[key].append(value)
+                for key, value in extra_score_lists.items():
+                    np_value = np.array(value)
+                    metrics[f"val/{key}"] = np_value.mean()
 
             # Always compute language consistency for tracking; only apply as penalty when configured.
             lc_scores = language_consistency_penalty(decoded_responses)

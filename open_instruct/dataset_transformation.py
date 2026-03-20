@@ -937,7 +937,7 @@ ENV_CONFIG_KEY = "env_config"
 
 # Cache version: increment this when transformation logic changes significantly
 # to invalidate old caches. v2: Added per-sample tool filtering in rlvr_tokenize_v3.
-DATASET_CACHE_VERSION = "v7"
+DATASET_CACHE_VERSION = "v9"
 
 
 def validate_dataset_tools(dataset: Dataset, configured_tool_names: list[str], dataset_name: str = "dataset") -> None:
@@ -1416,11 +1416,11 @@ def slr_bench_prepare_v1(row: dict[str, Any], tokenizer: PreTrainedTokenizer, **
     validation_program = row.get("validation program") or row.get("validation_program")
     if prompt is None or validation_program is None:
         return row
-    prompt += (
-        "\n\nWrap your final Prolog rule in [RULE]...[/RULE] tags. "
-        "Only the content inside these tags will be evaluated. "
-        "Example: [RULE] eastbound(T) :- has_car(T,C), short(C). [/RULE]"
-    )
+    # prompt += (
+    #     "\n\nWrap your final Prolog rule in [RULE]...[/RULE] tags. "
+    #     "Only the content inside these tags will be evaluated. "
+    #     "Example: [RULE] eastbound(T) :- has_car(T,C), short(C). [/RULE]"
+    # )
     validation_program_dict = {
         "validation_program": validation_program,
         "evaluation_config": {"positive_predicate": "eastbound", "negative_predicate": "westbound"},

@@ -4,10 +4,13 @@ Test script for verifier functionality in Python
 """
 
 import unittest
+from unittest.mock import patch
 
 from parameterized import parameterized
 
-from open_instruct.ground_truth_utils import F1Verifier, PuzzleMatcherVerifier
+from open_instruct.ground_truth_utils import F1Verifier, PuzzleMatcherVerifier, SLRBenchVerifier
+from open_instruct.ground_truth_utils import SLRBenchVerifierConfig
+from open_instruct.slr.slr_verifier import evaluate_prediction
 
 
 class TestPuzzleMatcherVerifier(unittest.TestCase):
@@ -141,6 +144,95 @@ class TestF1Verifier(unittest.TestCase):
             places=5,
             msg=f"Failed for {name}: prediction='{prediction}', labels={labels}",
         )
+
+
+class TestSLRBenchVerifier(unittest.TestCase):
+    """Tests for SLRBenchVerifier helper logic and SLR runtime edge cases."""
+
+    def test_extract_prolog_rule_tiered(self):
+        tagged = "<think>reasoning</think><answer>[RULE] eastbound(T) :- has_car(T,C). [/RULE]</answer>"
+        codeblock = "<answer>```prolog\neastbound(T) :- has_car(T,C).\n```</answer>"
+        plain = "eastbound(T) :- has_car(T,C)."
+
+        tagged_rule, tagged_format_ok = SLRBenchVerifier._extract_prolog_rule(tagged)
+        code_rule, code_format_ok = SLRBenchVerifier._extract_prolog_rule(codeblock)
+        plain_rule, plain_format_ok = SLRBenchVerifier._extract_prolog_rule(plain)
+
+        self.assertEqual(tagged_rule, "eastbound(T) :- has_car(T,C).")
+        self.assertTrue(tagged_format_ok)
+
+        self.assertEqual(code_rule, "eastbound(T) :- has_car(T,C).")
+        self.assertFalse(code_format_ok)
+
+        self.assertIsNone(plain_rule)
+        self.assertFalse(plain_format_ok)
+
+    def test_compute_reward_sparse_and_syntax_agnostic(self):
+        # No free floor reward for wrong predictions when gate is enabled.
+        self.assertEqual(SLRBenchVerifier.compute_reward(0.0, 0.0, 1.0, 0.8, k=6, partial_gate=0.5), 0.0)
+        self.assertEqual(SLRBenchVerifier.compute_reward(0.0, 0.49, 1.0, 0.8, k=6, partial_gate=0.5), 0.0)
+
+        # syntax_score is intentionally ignored by current design.
+        no_syntax = SLRBenchVerifier.compute_reward(0.0, 0.7, 0.0, 0.8, k=6, partial_gate=0.5)
+        with_syntax = SLRBenchVerifier.compute_reward(0.0, 0.7, 1.0, 0.8, k=6, partial_gate=0.5)
+        self.assertEqual(no_syntax, with_syntax)
+
+        # Full accuracy should remain near 1.0.
+        full = SLRBenchVerifier.compute_reward(1.0, 1.0, 1.0, 0.8)
+        self.assertGreaterEqual(full, 0.95)
+        self.assertLessEqual(full, 1.0)
+
+    def test_evaluate_prediction_handles_missing_swipl(self):
+        validation_program = "eastbound(train0).\nwestbound(train1)."
+        eval_config = {"positive_predicate": "eastbound", "negative_predicate": "westbound"}
+
+        with patch("open_instruct.slr.slr_verifier.subprocess.run", side_effect=FileNotFoundError("swipl missing")):
+            result = evaluate_prediction(
+                prediction="eastbound(T) :- true.",
+                validation_program=validation_program,
+                eval_config=eval_config,
+                timeout=1,
+                isomorphic=False,
+            )
+
+        self.assertFalse(result["is_correct"])
+        self.assertEqual(result["partial_score"], 0.0)
+        self.assertFalse(result["syntax_valid"])
+        self.assertIn("swipl", result["error"])
+
+    def test_selected_score_follows_slr_reward_config(self):
+        label = {
+            "validation_program": "eastbound(train0).\nwestbound(train1).",
+            "evaluation_config": {"positive_predicate": "eastbound", "negative_predicate": "westbound"},
+        }
+        prediction = "<answer>[RULE] eastbound(T) :- true. [/RULE]</answer>"
+
+        def fake_eval(_rule, _vp, _cfg, timeout=5, isomorphic=True):
+            return {
+                "is_correct": False,
+                "partial_score": 0.9 if isomorphic else 0.6,
+                "syntax_valid": True,
+            }
+
+        # base-selected run should return base score, while still tracking both.
+        verifier_base = SLRBenchVerifier(SLRBenchVerifierConfig(slr_reward="base"))
+        verifier_base._evaluate_prediction = fake_eval
+        result_base = verifier_base([], prediction, label)
+        self.assertEqual(result_base.score, result_base.extra_scores["slr_bench_base"])
+        self.assertEqual(result_base.extra_scores["slr_bench_selected"], result_base.extra_scores["slr_bench_base"])
+        self.assertEqual(result_base.extra_scores["slr_bench_selected_is_base"], 1.0)
+        self.assertEqual(result_base.extra_scores["slr_bench_selected_is_isomorphic"], 0.0)
+
+        # isomorphic-selected run should return isomorphic score.
+        verifier_iso = SLRBenchVerifier(SLRBenchVerifierConfig(slr_reward="isomorphic"))
+        verifier_iso._evaluate_prediction = fake_eval
+        result_iso = verifier_iso([], prediction, label)
+        self.assertEqual(result_iso.score, result_iso.extra_scores["slr_bench_isomorphic"])
+        self.assertEqual(
+            result_iso.extra_scores["slr_bench_selected"], result_iso.extra_scores["slr_bench_isomorphic"]
+        )
+        self.assertEqual(result_iso.extra_scores["slr_bench_selected_is_base"], 0.0)
+        self.assertEqual(result_iso.extra_scores["slr_bench_selected_is_isomorphic"], 1.0)
 
 
 if __name__ == "__main__":
