@@ -2,7 +2,7 @@
 # OLMo-3 7B Think RL (GRPO) on Slurm (7 nodes):
 #   Task 0 = Ray head (gradient updates via grpo_fast.py)
 #   Tasks 1–6 = Ray workers (48 vLLM inference engines)
-#SBATCH --job-name=RLVR-SLR-Non-IsomorphicRL
+#SBATCH --job-name=RLVR-SLR-no-IsoRL-v3
 #SBATCH --partition=all
 #SBATCH --nodes=6
 #SBATCH --gpus-per-node=8
@@ -14,10 +14,10 @@
 #SBATCH --error=logs/%x_%j/error.err
 #SBATCH --qos=normal
 #SBATCH --open-mode=append
-#SBATCH --exclude=cn13,cn06,cn05
+#SBATCH --exclude=cn13,cn06,cn05,cn34,cn25,cn19
 
 # --- 1. Configuration ---
-JOB_NAME="RLVR-SLR-Non-IsomorphicRL"
+JOB_NAME="RLVR-SLR-no-IsoRL-v3"
 BASE_DIR="/mnt/vast/home/lh22zyta/shortcut-RL/open-instruct"
 CONTAINER_IMAGE="docker://helffml/open_instruct_dev:slr"
 OUTPUT_DIR="$BASE_DIR/output/$JOB_NAME"

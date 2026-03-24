@@ -1,3 +1,5 @@
+import re
+
 
 def extract_code_block(text: str) -> str:
     """

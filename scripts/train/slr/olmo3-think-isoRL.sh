@@ -15,7 +15,7 @@
 #SBATCH --error=logs/%x_%j/error.err
 #SBATCH --qos=normal
 #SBATCH --open-mode=append
-#SBATCH --exclude=cn13,cn06,cn05,cn34,cn25
+#SBATCH --exclude=cn13,cn06,cn05,cn34,cn25,cn19
 
 # --- 1. Configuration ---
 JOB_NAME="RLVR-Olmo-IsoRL-base-judge"
@@ -120,7 +120,7 @@ GRPO_ARGS="--exp_name $JOB_NAME \
   --save_traces \
   --dataset_local_cache_dir /stage/.cache/open_instruct_dataset_cache \
   --kl_estimator 2 \
-  --dataset_mixer_list allenai/Dolci-Think-RL-7B 1.0 AIML-TUDA/SLR-Bench:v1-All 5.0 \
+  --dataset_mixer_list allenai/Dolci-Think-RL-7B 1.0 AIML-TUDA/SLR-Bench:v1-All 1.0 \
   --dataset_mixer_list_splits train \
   --dataset_mixer_eval_list allenai/Dolci-Think-RL-7B 8 AIML-TUDA/SLR-Bench:v1-All 4 \
   --dataset_mixer_eval_list_splits train \

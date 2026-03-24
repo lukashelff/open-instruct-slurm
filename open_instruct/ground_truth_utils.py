@@ -1263,13 +1263,13 @@ class SLRBenchVerifier(VerifierFunction):
     _CODE_BLOCK_PATTERN = re.compile(r"```(?:[a-zA-Z0-9]*\n)?(.*?)```", re.DOTALL)
 
     @staticmethod
-    def _extract_prolog_rule(prediction: str, parsing: str = 'extract_prolog_code') -> tuple[str, bool] | tuple[None, bool]:
+    def _extract_prolog_rule(prediction: str, parsing: str = 'extract_code_block') -> tuple[str, bool] | tuple[None, bool]:
         """Extract the Prolog rule from model output.
 
         After stripping the thinking section, applies one of two extraction modes
         controlled by ``parsing``:
 
-        ``'extract_prolog_code'``
+        ``'parse_code'``
             Runs ``parse_simple`` to strip surrounding prose, then returns the
             cleaned text with ``format_ok=False``.
 
@@ -1285,14 +1285,14 @@ class SLRBenchVerifier(VerifierFunction):
         Returns a tuple ``(rule_text, format_ok)`` where ``format_ok`` is
         ``True`` only when ``'extract_code_block'`` mode finds ``[RULE]`` tags.
         """
-        if parsing not in ['extract_code_block', 'extract_prolog_code']:
-            raise ValueError("Invalid parsing style. Must be 'extract_code_block' or 'extract_prolog_code'.")
+        if parsing not in ['extract_code_block', 'parse_code']:
+            raise ValueError("Invalid parsing style. Must be 'extract_code_block' or 'parse_code'.")
 
         cleaned = remove_thinking_section(prediction)
         if not cleaned.strip():
             return None, False
 
-        if parsing == 'extract_prolog_code':
+        if parsing == 'parse_code':
             # Extracts all prolog code from the model answer
             cleaned = parse_simple(cleaned)  # additional cleaning to remove irrelevant text
             return cleaned, False
@@ -1302,23 +1302,24 @@ class SLRBenchVerifier(VerifierFunction):
             # Tier 1: explicit [RULE] tags
             match = SLRBenchVerifier._RULE_TAG_PATTERN.search(cleaned)
             if match:
-                rule_text = match.group(1).strip()
+                rule_text = match.groups()[-1].strip()
                 if rule_text:
                     return rule_text, True
 
             # Tier 2: ```prolog ... ``` code block
             match = SLRBenchVerifier._PROLOG_BLOCK_PATTERN.search(cleaned)
             if match:
-                rule_text = match.group(1).strip()
+                rule_text = match.group()[-1].strip()
                 if rule_text:
                     return rule_text, True
 
             # Tier 3: any fenced code block
             match = SLRBenchVerifier._CODE_BLOCK_PATTERN.search(cleaned)
             if match:
-                rule_text = match.group(1).strip()
+                rule_text = match.groups()[-1].strip()
                 if rule_text:
                     return rule_text, True
+                
 
         return cleaned, False
 
@@ -1400,22 +1401,22 @@ class SLRBenchVerifier(VerifierFunction):
         Returns:
             float: reward in [0, 1].
         """
-        return partial_score
-        # if accuracy == 1.0:
-        #     # Full marks.  Apply a small simplicity modifier [0.95, 1.0]
-        #     # so that among equally correct rules, shorter ones are preferred.
-        #     return 0.95 + 0.05 * rule_simplicity_bonus
+        # return partial_score
+        if accuracy == 1.0:
+            # Full marks.  Apply a small simplicity modifier [0.95, 1.0]
+            # so that among equally correct rules, shorter ones are preferred.
+            return 0.95 + 0.05 * rule_simplicity_bonus
 
-        # # Partial credit: only when the rule covers a meaningful fraction.
-        # if partial_score < partial_gate:
-        #     return 0.0
+        # Partial credit: only when the rule covers a meaningful fraction.
+        if partial_score < partial_gate:
+            return 0.0
 
-        # # partial_score**k compresses the range: 0.5→0.016, 0.8→0.26, 0.95→0.74
-        # # Scale into [0, 0.9] so partial is always strictly below full accuracy.
-        # base = partial_score**k
-        # # Multiplicative simplicity modifier: scales base by [0.9, 1.0]
-        # simplicity_mod = 0.9 + 0.1 * rule_simplicity_bonus
-        # return min(0.9, base * simplicity_mod)
+        # partial_score**k compresses the range: 0.5→0.016, 0.8→0.26, 0.95→0.74
+        # Scale into [0, 0.9] so partial is always strictly below full accuracy.
+        base = partial_score**k
+        # Multiplicative simplicity modifier: scales base by [0.9, 1.0]
+        simplicity_mod = 0.9 + 0.1 * rule_simplicity_bonus
+        return min(0.9, base * simplicity_mod)
 
     def __call__(
         self,
