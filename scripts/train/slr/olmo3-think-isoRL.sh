@@ -5,7 +5,7 @@
 #   Tasks 2–7 = Ray workers (48 vLLM inference engines)
 #SBATCH --job-name=RLVR-Olmo-IsoRL-base-judge
 #SBATCH --partition=all
-#SBATCH --nodes=8
+#SBATCH --nodes=7
 #SBATCH --gpus-per-node=8
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=112
@@ -138,7 +138,7 @@ GRPO_ARGS="--exp_name $JOB_NAME \
   --total_episodes 10000000 \
   --deepspeed_stage 3 \
   --num_learners_per_node 8 \
-  --vllm_num_engines 48 \
+  --vllm_num_engines 40 \
   --vllm_tensor_parallel_size 1 \
   --vllm_gpu_memory_utilization 0.85 \
   --vllm_sync_backend nccl \
@@ -171,7 +171,7 @@ GRPO_ARGS="--exp_name $JOB_NAME \
   --push_to_hub false"
 
 # Do not pass SLURM_PROCID=... (script's value is unset; each srun task has its own in the environment). Container inherits it.
-srun --nodes=8 --ntasks=8 apptainer exec --nv --writable-tmpfs "${APPTAINER_ENV[@]}" "$SIF_FILE" \
+srun --nodes=7 --ntasks=7 apptainer exec --nv --writable-tmpfs "${APPTAINER_ENV[@]}" "$SIF_FILE" \
   bash -c '
     cd /stage
     if [ "${SLURM_PROCID:-0}" = "1" ]; then

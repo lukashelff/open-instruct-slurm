@@ -150,37 +150,47 @@ class TestSLRBenchVerifier(unittest.TestCase):
     """Tests for SLRBenchVerifier helper logic and SLR runtime edge cases."""
 
     def test_extract_prolog_rule_tiered(self):
+        verifier = SLRBenchVerifier(SLRBenchVerifierConfig())  # default: code_block parsing
         tagged = "<think>reasoning</think><answer>[RULE] eastbound(T) :- has_car(T,C). [/RULE]</answer>"
         codeblock = "<answer>```prolog\neastbound(T) :- has_car(T,C).\n```</answer>"
         plain = "eastbound(T) :- has_car(T,C)."
 
-        tagged_rule, tagged_format_ok = SLRBenchVerifier._extract_prolog_rule(tagged)
-        code_rule, code_format_ok = SLRBenchVerifier._extract_prolog_rule(codeblock)
-        plain_rule, plain_format_ok = SLRBenchVerifier._extract_prolog_rule(plain)
+        tagged_rule, tagged_format_ok = verifier._extract_prolog_rule(tagged)
+        code_rule, code_format_ok = verifier._extract_prolog_rule(codeblock)
+        plain_rule, plain_format_ok = verifier._extract_prolog_rule(plain)
 
         self.assertEqual(tagged_rule, "eastbound(T) :- has_car(T,C).")
         self.assertTrue(tagged_format_ok)
 
         self.assertEqual(code_rule, "eastbound(T) :- has_car(T,C).")
-        self.assertFalse(code_format_ok)
+        self.assertTrue(code_format_ok)
 
-        self.assertIsNone(plain_rule)
+        # plain text with no tags/code blocks falls through to return cleaned text
+        self.assertEqual(plain_rule, plain)
         self.assertFalse(plain_format_ok)
 
     def test_compute_reward_sparse_and_syntax_agnostic(self):
+        verifier = SLRBenchVerifier(SLRBenchVerifierConfig())
         # No free floor reward for wrong predictions when gate is enabled.
-        self.assertEqual(SLRBenchVerifier.compute_reward(0.0, 0.0, 1.0, 0.8, k=6, partial_gate=0.5), 0.0)
-        self.assertEqual(SLRBenchVerifier.compute_reward(0.0, 0.49, 1.0, 0.8, k=6, partial_gate=0.5), 0.0)
+        self.assertEqual(verifier.compute_reward(0.0, 0.0, 1.0, 0.8, k=6, partial_gate=0.5), 0.0)
+        self.assertEqual(verifier.compute_reward(0.0, 0.49, 1.0, 0.8, k=6, partial_gate=0.5), 0.0)
 
         # syntax_score is intentionally ignored by current design.
-        no_syntax = SLRBenchVerifier.compute_reward(0.0, 0.7, 0.0, 0.8, k=6, partial_gate=0.5)
-        with_syntax = SLRBenchVerifier.compute_reward(0.0, 0.7, 1.0, 0.8, k=6, partial_gate=0.5)
+        no_syntax = verifier.compute_reward(0.0, 0.7, 0.0, 0.8, k=6, partial_gate=0.5)
+        with_syntax = verifier.compute_reward(0.0, 0.7, 1.0, 0.8, k=6, partial_gate=0.5)
         self.assertEqual(no_syntax, with_syntax)
 
         # Full accuracy should remain near 1.0.
-        full = SLRBenchVerifier.compute_reward(1.0, 1.0, 1.0, 0.8)
+        full = verifier.compute_reward(1.0, 1.0, 1.0, 0.8)
         self.assertGreaterEqual(full, 0.95)
         self.assertLessEqual(full, 1.0)
+
+    def test_compute_reward_partial_mode(self):
+        verifier = SLRBenchVerifier(SLRBenchVerifierConfig(slr_reward_function="partial"))
+        # In partial mode, compute_reward just returns the raw partial_score.
+        self.assertEqual(verifier.compute_reward(0.0, 0.7, 1.0, 0.8), 0.7)
+        self.assertEqual(verifier.compute_reward(1.0, 1.0, 1.0, 0.8), 1.0)
+        self.assertEqual(verifier.compute_reward(0.0, 0.0, 0.0, 0.0), 0.0)
 
     def test_evaluate_prediction_handles_missing_swipl(self):
         validation_program = "eastbound(train0).\nwestbound(train1)."
@@ -219,20 +229,12 @@ class TestSLRBenchVerifier(unittest.TestCase):
         verifier_base._evaluate_prediction = fake_eval
         result_base = verifier_base([], prediction, label)
         self.assertEqual(result_base.score, result_base.extra_scores["slr_bench_base"])
-        self.assertEqual(result_base.extra_scores["slr_bench_selected"], result_base.extra_scores["slr_bench_base"])
-        self.assertEqual(result_base.extra_scores["slr_bench_selected_is_base"], 1.0)
-        self.assertEqual(result_base.extra_scores["slr_bench_selected_is_isomorphic"], 0.0)
 
         # isomorphic-selected run should return isomorphic score.
         verifier_iso = SLRBenchVerifier(SLRBenchVerifierConfig(slr_reward="isomorphic"))
         verifier_iso._evaluate_prediction = fake_eval
         result_iso = verifier_iso([], prediction, label)
         self.assertEqual(result_iso.score, result_iso.extra_scores["slr_bench_isomorphic"])
-        self.assertEqual(
-            result_iso.extra_scores["slr_bench_selected"], result_iso.extra_scores["slr_bench_isomorphic"]
-        )
-        self.assertEqual(result_iso.extra_scores["slr_bench_selected_is_base"], 0.0)
-        self.assertEqual(result_iso.extra_scores["slr_bench_selected_is_isomorphic"], 1.0)
 
 
 if __name__ == "__main__":

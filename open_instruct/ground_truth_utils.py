@@ -39,7 +39,7 @@ from open_instruct.math_utils import (
 )
 from open_instruct.rubrics import RUBRIC_SCORING_PROMPT
 from open_instruct.rubrics.run_utils import extract_json_from_response, run_litellm_async
-from open_instruct.slr.parsing import extract_code_block, parse_simple, parse_complex
+from open_instruct.slr.parsing import parse_simple
 from open_instruct.utils import extract_final_answer
 
 logger = logger_utils.setup_logger(__name__)
@@ -106,7 +106,9 @@ class CodeVerifierConfig(VerifierConfig):
 class SLRBenchVerifierConfig(VerifierConfig):
     """Config for SLR-Bench verifier. Always runs both isomorphic and base judges for tracking."""
 
-    slr_reward: str = "isomorphic"
+    slr_reward: str = "isomorphic" # "base" | "isomorphic" 
+    slr_parsing: str = "code_block"  # "code_block" | "simple"
+    slr_reward_function: str = "scaled" # "scaled" | "partial"
     """Which SLR judge score to use for training reward: 'isomorphic' or 'base'. Both always run and are tracked."""
 
 
@@ -1252,8 +1254,10 @@ class SLRBenchVerifier(VerifierFunction):
 
         self._evaluate_prediction = evaluate_prediction
         logger.info(
-            "SLRBenchVerifier: loaded unified slr_verifier module. Training reward uses slr_reward='%s'.",
+            "SLRBenchVerifier: slr_reward='%s', slr_parsing='%s', slr_reward_function='%s'.",
             verifier_config.slr_reward,
+            verifier_config.slr_parsing,
+            verifier_config.slr_reward_function,
         )
 
     # Regex to extract content between [RULE] and [/RULE] tags (case-insensitive, dotall)
@@ -1262,18 +1266,17 @@ class SLRBenchVerifier(VerifierFunction):
     _PROLOG_BLOCK_PATTERN = re.compile(r"```prolog\s*(.*?)\s*```", re.IGNORECASE | re.DOTALL)
     _CODE_BLOCK_PATTERN = re.compile(r"```(?:[a-zA-Z0-9]*\n)?(.*?)```", re.DOTALL)
 
-    @staticmethod
-    def _extract_prolog_rule(prediction: str, parsing: str = 'extract_code_block') -> tuple[str, bool] | tuple[None, bool]:
+    def _extract_prolog_rule(self, prediction: str) -> tuple[str, bool] | tuple[None, bool]:
         """Extract the Prolog rule from model output.
 
         After stripping the thinking section, applies one of two extraction modes
-        controlled by ``parsing``:
+        controlled by ``self.verifier_config.slr_parsing``:
 
-        ``'parse_code'``
+        ``'simple'``
             Runs ``parse_simple`` to strip surrounding prose, then returns the
             cleaned text with ``format_ok=False``.
 
-        ``'extract_code_block'``
+        ``'code_block'`` (default)
             Uses a tiered extraction strategy:
 
             1. ``[RULE]...[/RULE]`` tags  → (content, True)   format compliant
@@ -1283,22 +1286,23 @@ class SLRBenchVerifier(VerifierFunction):
                outputs from being accidentally rewarded.
 
         Returns a tuple ``(rule_text, format_ok)`` where ``format_ok`` is
-        ``True`` only when ``'extract_code_block'`` mode finds ``[RULE]`` tags.
+        ``True`` only when ``'code_block'`` mode finds ``[RULE]`` tags.
         """
-        if parsing not in ['extract_code_block', 'parse_code']:
-            raise ValueError("Invalid parsing style. Must be 'extract_code_block' or 'parse_code'.")
+        parsing = self.verifier_config.slr_parsing
+        if parsing not in ['code_block', 'simple']:
+            raise ValueError(f"Invalid slr_parsing='{parsing}'. Must be 'code_block' or 'simple'.")
 
         cleaned = remove_thinking_section(prediction)
         if not cleaned.strip():
             return None, False
 
-        if parsing == 'parse_code':
+        if parsing == 'simple':
             # Extracts all prolog code from the model answer
             cleaned = parse_simple(cleaned)  # additional cleaning to remove irrelevant text
             return cleaned, False
-        elif parsing == 'extract_code_block':
+        elif parsing == 'code_block':
             # First try to find explicit [RULE] tags, which is the preferred format.  If not found, fall back to code block extraction.
-            
+
             # Tier 1: explicit [RULE] tags
             match = SLRBenchVerifier._RULE_TAG_PATTERN.search(cleaned)
             if match:
@@ -1309,7 +1313,7 @@ class SLRBenchVerifier(VerifierFunction):
             # Tier 2: ```prolog ... ``` code block
             match = SLRBenchVerifier._PROLOG_BLOCK_PATTERN.search(cleaned)
             if match:
-                rule_text = match.group()[-1].strip()
+                rule_text = match.groups()[-1].strip()
                 if rule_text:
                     return rule_text, True
 
@@ -1369,8 +1373,8 @@ class SLRBenchVerifier(VerifierFunction):
 
         return max(0.0, min(1.0, simplicity))
 
-    @staticmethod
     def compute_reward(
+        self,
         accuracy: float,
         partial_score: float,
         syntax_score: float,
@@ -1401,7 +1405,9 @@ class SLRBenchVerifier(VerifierFunction):
         Returns:
             float: reward in [0, 1].
         """
-        # return partial_score
+        if self.verifier_config.slr_reward_function == "partial":
+            return partial_score
+
         if accuracy == 1.0:
             # Full marks.  Apply a small simplicity modifier [0.95, 1.0]
             # so that among equally correct rules, shorter ones are preferred.

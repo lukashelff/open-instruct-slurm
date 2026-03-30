@@ -379,6 +379,10 @@ class StreamingDataLoaderConfig:
     # SLR-Bench verifier
     slr_reward: Literal["isomorphic", "base"] = "isomorphic"
     """Which SLR judge score to use for training reward: 'isomorphic' or 'base'."""
+    slr_parsing: Literal["code_block", "simple"] = "code_block"
+    """Parsing strategy for extracting Prolog rules: 'code_block' (tiered RULE tags + code blocks) or 'simple' (parse_simple cleanup)."""
+    slr_reward_function: Literal["scaled", "partial"] = "scaled"
+    """Reward function: 'scaled' (gated partial credit with simplicity bonus) or 'partial' (raw partial score)."""
 
     # Non stop penalty
     non_stop_penalty: bool = False
